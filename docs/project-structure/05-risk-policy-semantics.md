@@ -20,6 +20,20 @@
 
 风险策略按上游 Server 单独配置。
 
+## 风险推断优先级
+
+工具 annotations 中的 `readOnlyHint` 只能作为提示，不能作为最终安全事实。
+
+当前本地推断优先级是：
+
+1. `destructiveHint: true` 直接视为 `destructive`。
+2. 工具名或描述中出现删除、移除、清空等破坏性信号时，优先视为 `destructive`，即使上游同时给了 `readOnlyHint: true`。
+3. 工具名或描述中出现写入、发送、发布、创建、支付等强变更信号时，优先视为 `mutating`。
+4. 剩余场景才接受 `readOnlyHint: true` 作为只读提示。
+5. `readOnlyHint: false` 不会自动视为 mutating，但会阻止它被简单只读关键词判成只读。
+
+执行层仍以最终 `risk_level` 为准，而不是盲信上游 hint。
+
 ## read_only_only 策略
 
 只有 `read_only` 能力可以被推荐和执行。

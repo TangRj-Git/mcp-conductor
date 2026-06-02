@@ -88,6 +88,75 @@ def test_discovery_service_converts_upstream_tools_to_capabilities() -> None:
     assert prompt.schema_or_metadata["arguments"][0]["name"] == "pr_number"
 
 
+def test_discovery_service_uses_destructive_annotation_for_tool_risk() -> None:
+    class DestructiveClient:
+        def list_tools(self):
+            return [
+                {
+                    "name": "archive_file",
+                    "description": "Archive a file",
+                    "input_schema": {},
+                    "annotations": {"destructiveHint": True},
+                }
+            ]
+
+    class Manager:
+        clients = {"filesystem": DestructiveClient()}
+
+    service = CapabilityDiscoveryService(upstream_manager=Manager())
+
+    capabilities = service.discover()
+
+    assert capabilities[0].risk_level == RiskLevel.DESTRUCTIVE
+    assert capabilities[0].read_only_hint is False
+
+
+def test_discovery_service_uses_read_only_annotation_for_tool_risk() -> None:
+    class ReadOnlyClient:
+        def list_tools(self):
+            return [
+                {
+                    "name": "update_status_view",
+                    "description": "Show update status",
+                    "input_schema": {},
+                    "annotations": {"readOnlyHint": True},
+                }
+            ]
+
+    class Manager:
+        clients = {"github": ReadOnlyClient()}
+
+    service = CapabilityDiscoveryService(upstream_manager=Manager())
+
+    capabilities = service.discover()
+
+    assert capabilities[0].risk_level == RiskLevel.READ_ONLY
+    assert capabilities[0].read_only_hint is True
+
+
+def test_discovery_service_does_not_trust_read_only_hint_for_destructive_tool() -> None:
+    class ConflictingHintClient:
+        def list_tools(self):
+            return [
+                {
+                    "name": "delete_file",
+                    "description": "Delete a local file",
+                    "input_schema": {},
+                    "annotations": {"readOnlyHint": True},
+                }
+            ]
+
+    class Manager:
+        clients = {"filesystem": ConflictingHintClient()}
+
+    service = CapabilityDiscoveryService(upstream_manager=Manager())
+
+    capabilities = service.discover()
+
+    assert capabilities[0].risk_level == RiskLevel.DESTRUCTIVE
+    assert capabilities[0].read_only_hint is False
+
+
 def test_discovery_service_supports_async_upstream_clients() -> None:
     class FakeAsyncClient:
         async def list_tools_async(self):
@@ -158,6 +227,39 @@ def test_discovery_service_records_errors_without_stopping_other_discovery() -> 
             "capability_type": "tool",
             "operation": "list_tools",
             "error": "tools unavailable",
+        }
+    ]
+
+
+def test_discovery_service_records_conversion_errors_without_stopping_discovery() -> None:
+    class ClientWithMalformedResource:
+        def list_resources(self):
+            return [
+                {"name": "missing uri"},
+                {
+                    "uri": "repo://owner/project/README.md",
+                    "name": "README.md",
+                    "description": "Repository README",
+                    "mime_type": "text/markdown",
+                },
+            ]
+
+    class Manager:
+        clients = {"github": ClientWithMalformedResource()}
+
+    service = CapabilityDiscoveryService(upstream_manager=Manager())
+
+    capabilities = service.discover()
+
+    assert [capability.capability_id for capability in capabilities] == [
+        "github.resources.repo%3A%2F%2Fowner%2Fproject%2FREADME.md",
+    ]
+    assert service.errors == [
+        {
+            "upstream_server_id": "github",
+            "capability_type": "resource",
+            "operation": "convert",
+            "error": "resource missing required identifier",
         }
     ]
 

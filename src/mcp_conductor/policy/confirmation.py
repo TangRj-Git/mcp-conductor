@@ -36,6 +36,7 @@ class PendingActionStore:
             risk_level: RiskLevel,
             ttl_seconds: int = 300,
     ) -> PendingAction:
+        self.prune_expired()
         pending = create_pending_action(
             capability_id=capability_id,
             arguments=arguments,
@@ -51,5 +52,21 @@ class PendingActionStore:
     def remove(self, pending_action_id: str) -> None:
         self.values.pop(pending_action_id, None)
 
+    def mark_confirmed(self, pending_action_id: str) -> bool:
+        pending = self.get(pending_action_id)
+        if pending is None or self.is_expired(pending):
+            return False
+        pending.confirmed = True
+        return True
+
     def is_expired(self, pending: PendingAction) -> bool:
         return pending.expires_at <= datetime.now(UTC)
+
+    def prune_expired(self) -> None:
+        expired_ids = [
+            pending_action_id
+            for pending_action_id, pending in self.values.items()
+            if self.is_expired(pending)
+        ]
+        for pending_action_id in expired_ids:
+            self.remove(pending_action_id)

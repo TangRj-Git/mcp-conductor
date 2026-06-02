@@ -37,12 +37,15 @@ def main():
 当前第一版基础代码已经进入可联调状态：
 
 - `src/mcp_conductor` 包结构已经建立。
-- FastMCP 对外入口和四个对外工具已经建立。
+- FastMCP 对外入口和九个对外工具已经建立。
 - 配置加载、环境变量替换、上游 Client 管理、能力发现、能力注册、规则推荐、执行校验、结果缓存、风险策略、危险操作确认和 Roots/allowlist 已经有第一版实现。
 - `.env`、`.idea/`、`.venv/`、`__pycache__/` 和 `.pytest_cache/` 已经通过 `.gitignore` 排除；`.env` 和 `.idea/` 已从 Git 索引移除，保留本地使用。
-- 当前测试命令 `uv run pytest -q` 已通过，结果为 `49 passed`。
+- 当前测试命令 `uv run pytest` 已通过；具体通过数量以最新测试输出为准。
 
-下一步不继续扩大功能范围，而是优先做真实上游 MCP Server 联调，验证从配置、启动、发现、推荐、调用到结果返回的完整链路。
+下一步应分成两条线：
+
+1. 继续做真实上游 MCP Server 联调，验证从配置、启动、发现、推荐、调用到结果返回的完整链路。
+2. 为“每轮 agent loop 步骤都先筛选能力”的目标设计 step routing API 和轻量 routing session；如果要强制触发，则后续另建 Host wrapper / Agent Orchestrator。
 
 ## 架构目标
 
@@ -60,7 +63,7 @@ def main():
 3. 对外工具不能直接操作上游 Client，必须经过网关运行时。
 4. `call_upstream_tool` 必须经过 `recommendation_id`、`route_token`、schema、risk policy 和 Roots/allowlist 校验。
 5. 第一版不做完整 Host，不私自配置模型 API 密钥，不直接向用户确认危险操作。
-6. 代码目录要能支撑后续增加 resources、resource templates、prompts、Host 采样路由器、语义检索和持久化缓存。
+6. 代码目录要支撑当前 resources、resource templates、prompts 受控访问链路，并保留后续增加 Host 采样路由器、语义检索和持久化缓存的空间。
 
 ## 推荐源码目录
 
@@ -104,6 +107,9 @@ mcp-conductor/
         rules.py
         recommender.py
         sampled_router.py
+      exposure/
+        __init__.py
+        planner.py
       execution/
         __init__.py
         engine.py
@@ -126,8 +132,12 @@ mcp-conductor/
       public_tools/
         __init__.py
         capabilities.py
+        exposure.py
         recommend.py
         call_tool.py
+        read_resource.py
+        read_resource_template.py
+        get_prompt.py
         read_result.py
       observability/
         __init__.py
@@ -184,9 +194,14 @@ python -m mcp_conductor
 负责 FastMCP 服务创建和对外工具注册：
 
 - 创建 FastMCP app/server。
+- 注册 `analyze_user_task`。
 - 注册 `list_upstream_capabilities`。
+- 注册 `list_exposed_capabilities`。
 - 注册 `recommend_capabilities`。
 - 注册 `call_upstream_tool`。
+- 注册 `read_upstream_resource`。
+- 注册 `read_upstream_resource_template`。
+- 注册 `get_upstream_prompt`。
 - 注册 `read_result`。
 
 `server.py` 不应该直接连接上游 MCP Server，也不应该直接管理缓存。它只把请求转给 `runtime.py`。
@@ -204,6 +219,7 @@ python -m mcp_conductor
 - 能力发现
 - 能力注册表
 - 能力路由器
+- 暴露计划生成器
 - 策略引擎
 - 网关执行引擎
 - 结果管理器
@@ -212,9 +228,14 @@ python -m mcp_conductor
 它提供对外工具需要的少量方法：
 
 ```text
+analyze_user_task(...)
 list_upstream_capabilities(...)
+list_exposed_capabilities(...)
 recommend_capabilities(...)
 call_upstream_tool(...)
+read_upstream_resource(...)
+read_upstream_resource_template(...)
+get_upstream_prompt(...)
 read_result(...)
 startup()
 shutdown()
@@ -287,8 +308,8 @@ disabled
 职责：
 
 - 初始化 MCP session。
-- 调用上游 `tools/list`、`tools/call`。
-- 调用上游 `resources/list`、`resources/templates/list`、`prompts/list`。
+- 调用上游 `tools/list`、`resources/list`、`resources/templates/list`、`prompts/list`。
+- 访问上游 `tools/call`、`resources/read` 和 `prompts/get`。
 - 统一处理超时、错误、取消。
 
 ### `upstream/lifecycle.py`
@@ -308,19 +329,22 @@ disabled
 
 负责上游能力发现。
 
-第一版完整支持：
+当前第一版完整支持发现：
 
 ```text
 tools/list
-tools/call
-```
-
-第一版只发现和展示：
-
-```text
 resources/list
 resources/templates/list
 prompts/list
+```
+
+当前第一版受控访问链路：
+
+```text
+call_upstream_tool -> tools/call
+read_upstream_resource -> resources/read
+read_upstream_resource_template -> template expansion + resources/read
+get_upstream_prompt -> prompts/get
 ```
 
 ### `registry/store.py`
@@ -395,24 +419,24 @@ enabled
 - `recommendation_id` 是否过期。
 - `route_token` 是否匹配。
 - `capability_id` 是否属于推荐结果。
-- `capability_type` 是否为 tool。
-- 工具是否仍然启用。
+- `capability_type` 是否匹配当前公开工具。
+- 能力是否仍然启用。
 - arguments 是否符合 input schema。
 - Roots / allowlist 是否允许访问相关路径。
 - 风险策略是否允许自动执行。
 
 ### `execution/engine.py`
 
-负责真实调用上游 MCP Server。
+负责真实调用或访问上游 MCP Server。
 
 执行链路：
 
 ```text
-call_upstream_tool request
+public access tool request
   -> validation
   -> policy check
   -> upstream client lookup
-  -> upstream tools/call
+  -> upstream tools/call | resources/read | prompts/get
   -> result manager
 ```
 
@@ -477,6 +501,7 @@ call_upstream_tool request
 - `result_id` 不透明、不可猜测。
 - 按外部连接/session 或请求上下文隔离。
 - 设置最大条数和最大字节数。
+- 如果当前 Host/transport 无法提供 session id，则大结果不进入缓存，只返回摘要和预览。
 - 不缓存 secrets、token、密码和敏感凭证。
 - 进程退出后失效。
 
@@ -522,17 +547,47 @@ call_upstream_tool request
 
 只返回摘要、分页和必要元数据，不返回完整内部状态。
 
+### `public_tools/exposure.py`
+
+实现 `list_exposed_capabilities`。
+
+它只返回当前 `exposure` 配置下的暴露计划，不直接注册动态工具，也不直接执行上游能力。
+
 ### `public_tools/recommend.py`
 
 实现 `recommend_capabilities`。
 
-它调用 `routing/recommender.py`，不直接执行上游工具。
+它调用 `routing/recommender.py`，不直接执行或访问上游能力。
+
+### `public_tools/analyze.py`
+
+实现 `analyze_user_task`。
+
+它复用推荐链路，但作为更适合 Host 在用户任务开始或 agent loop 步骤中触发的首选入口。
 
 ### `public_tools/call_tool.py`
 
 实现 `call_upstream_tool`。
 
 它必须走 `execution/validation.py` 和 `execution/engine.py`，不能直接调用上游 Client。
+
+### `public_tools/read_resource.py`
+
+实现 `read_upstream_resource`。
+
+它只读取已经推荐、已校验、风险策略允许的只读 resource。
+
+### `public_tools/read_resource_template.py`
+
+实现 `read_upstream_resource_template`。
+
+它先校验模板参数并展开 URI，再读取已经推荐、已校验、风险策略允许的只读 resource template。
+
+### `public_tools/get_prompt.py`
+
+实现 `get_upstream_prompt`。
+
+它只获取已经推荐、已校验、风险策略允许的 prompt。
 
 ### `public_tools/read_result.py`
 
@@ -588,7 +643,7 @@ tests/
 - 危险操作返回 confirmation。
 - `result_id` TTL 和 session 隔离。
 - 上游连接失败不影响其他上游。
-- 后续真实上游联调应补充端到端测试或手动验证记录，覆盖真实 `tools/list` 和 `tools/call`。
+- 后续真实上游联调应继续补充端到端测试或手动验证记录，覆盖真实 `tools/list`、`resources/list`、`prompts/list`、`tools/call`、`resources/read` 和 `prompts/get`。
 
 ## 依赖方向
 
@@ -602,6 +657,7 @@ public_tools
     -> discovery
     -> registry
     -> routing
+    -> exposure
     -> execution
     -> policy
     -> results
@@ -613,9 +669,10 @@ public_tools
 - `public_tools` 不直接访问 `upstream`。
 - `server.py` 不直接访问 `upstream`、`policy`、`results` 的内部细节。
 - `execution` 可以调用 `policy`、`registry`、`upstream`、`results`。
-- `routing` 只能推荐能力，不能执行能力。
+- `routing` 只能推荐能力，不能执行或访问能力。
+- `exposure` 只能生成暴露计划，不能执行或访问能力。
 - `policy` 不应该依赖 FastMCP。
-- `results` 不应该调用上游工具。
+- `results` 不应该调用或访问上游能力。
 - `primitives` 负责协议协作能力，不负责业务路由。
 
 ## 第一版实现顺序
@@ -623,7 +680,7 @@ public_tools
 第一版建议实现顺序和当前状态：
 
 1. 已完成：建立 `src/mcp_conductor` 包结构和 CLI 入口。
-2. 已完成：创建 FastMCP 服务和四个对外工具。
+2. 已完成：创建 FastMCP 服务和九个对外工具。
 3. 已完成：实现配置加载和配置 schema。
 4. 已完成：实现上游 Client Manager 的生命周期骨架。
 5. 已完成：实现 tools/resources/templates/prompts 发现。
@@ -631,11 +688,14 @@ public_tools
 7. 已完成：实现规则推荐和 `recommendation_id` / `route_token`。
 8. 已完成：实现 `call_upstream_tool` 调用前校验。
 9. 已完成：实现上游 tool 调用转发的第一版链路。
-10. 已完成：实现结果管理器和 `read_result`。
-11. 已完成：实现风险策略和 `confirmation_required`。
-12. 已完成：补上原语适配器和桥接层的保守降级。
-13. 下一步：选择一个低风险真实上游 MCP Server，跑通真实发现和工具调用。
-14. 下一步：根据联调结果补齐配置样例、错误提示、真实上游端到端测试和 README 使用说明。
+10. 已完成：实现 `read_upstream_resource`、`read_upstream_resource_template` 和 `get_upstream_prompt`。
+11. 已完成：实现结果管理器和 `read_result`。
+12. 已完成：实现风险策略、Host Elicitation 和 `confirmation_required` 兜底。
+13. 已完成：补上原语适配器和桥接层的保守降级。
+14. 已完成：实现 `exposure` 配置、暴露计划生成器和 `list_exposed_capabilities` 诊断入口。
+15. 已完成：使用真实 `learn-mcp-server` 配置跑通发现、推荐和四类公开访问工具的 smoke 验证。
+16. 下一步：根据更多真实上游联调结果继续补齐错误提示、端到端测试和配置样例。
+17. 下一步：补齐 step routing 会话结构和 `analyze_agent_step` 设计，为后续 Host/Agent Orchestrator 做准备。
 
 ## 顶层 main.py 是否需要删除
 
@@ -670,6 +730,6 @@ public_tools
 - 运行时负责协调。
 - 配置、上游连接、发现、注册、路由、执行、策略、结果和原语模块分开。
 - 对外工具只调用运行时。
-- 上游工具执行必须经过推荐凭证和安全策略。
+- 上游能力访问必须经过推荐凭证和安全策略。
 
 顶层 `main.py` 已删除，当前唯一正式入口是 `mcp_conductor.cli:main`。

@@ -9,7 +9,7 @@
 主要职责：
 
 - 使用 FastMCP 启动服务。
-- 注册对外高级 tools；第一版不把上游 resources、resource templates 和 prompts 作为完整对外调用链路暴露。
+- 注册对外高级 tools；上游 tools、resources、resource templates 和 prompts 不会原样暴露，只能通过推荐凭证和对应公开工具受控访问。
 - 接收外部 Host 的 MCP 调用。
 - 将调用转交给内部网关运行时。
 - 不负责直接和最终大模型对话。
@@ -80,20 +80,52 @@
 - 第一版使用规则和标签召回相关能力。
 - 第二阶段可加入语义检索召回相关能力。
 - 第二阶段可调用 Host 采样路由器做智能筛选。
-- 输出候选上游工具或资源。
+- 输出紧凑的候选能力卡片和推荐能力列表，避免把全部上游 schema 暴露给外部模型。
+- 当前第一版允许 tool、resource、resource template 和 prompt 进入推荐链路；tool 通过 `call_upstream_tool` 执行，resource/template/prompt 通过各自公开工具读取或获取。
 
-### 7. 路由代理
+### 7. Host 采样路由器（第二阶段可选）
 
-一个专门做能力筛选的子代理。
+这是第二阶段可选的能力筛选增强，不是第一版核心模块，也不是 `mcp-conductor` 自己私自创建的模型子代理。
 
 主要职责：
 
-- 读取用户任务和候选工具卡片。
+- 读取用户任务和候选能力卡片。
 - 判断任务意图和所需能力。
 - 输出推荐能力、原因和置信度。
-- 不直接执行上游工具调用。
+- 不直接执行或访问上游能力。
 - 如果需要模型推理，必须通过 Host Sampling 请求外部 Host 的受控模型；不得由 `mcp-conductor` 私自使用自己的模型配置。
 - 如果 Host 不支持 Sampling，必须回退到规则/标签筛选。
+- Sampling 结果只影响推荐排序和筛选范围，不自动获得执行权限。
+
+### 7.5 Exposure Planner
+
+负责根据 `exposure` 配置、能力注册表和风险策略生成“将来可直接暴露给 Host 的上游工具计划”。
+
+主要职责：
+
+- 读取 `exposure.mode`、include/exclude 过滤条件和 `max_exposed_tools`。
+- 只选择当前允许直接规划暴露的 read-only tool。
+- 为上游 tool 生成稳定、可读、冲突安全的 `exposed_name`。
+- 返回 `exposed_capabilities` 和 `skipped_capabilities`，用于 Inspector 或 Host 诊断。
+- 不直接注册 FastMCP 动态工具，也不执行任何上游能力。
+
+### 7.6 Step Routing Session（后续）
+
+这是为了支持“每次用户输入和每次 agent loop 步骤都重新筛选能力”的后续模块。
+
+主要职责：
+
+- 保存轻量 routing session，不保存完整对话历史。
+- 记录最初用户任务摘要、最近步骤摘要、推荐过的能力、调用过的能力和失败记录。
+- 接收单次 `step_content`，辅助当前步骤能力筛选。
+- 为后续 `analyze_agent_step` 返回 `routing_round_id`、候选能力、`next_public_tool` 和 `ready_to_call_arguments`。
+- 给未来 Host wrapper / Agent Orchestrator 提供稳定接口。
+
+边界：
+
+- 它仍然属于 Gateway Core 的能力筛选配套模块。
+- 它不能强制 Codex、Claude Code 等外部 Host 每轮调用。
+- 真正强制每轮调用需要外层 Host/Agent Orchestrator。
 
 ### 8. 网关执行引擎
 
@@ -144,16 +176,21 @@
 
 负责定义 `mcp-conductor` 对外暴露的少量高级工具。
 
-第一版候选工具：
+当前第一版公开工具：
 
 ```text
+analyze_user_task
 list_upstream_capabilities
+list_exposed_capabilities
 recommend_capabilities
 call_upstream_tool
+read_upstream_resource
+read_upstream_resource_template
+get_upstream_prompt
 read_result
 ```
 
-`ask_conductor` 作为第二阶段或可选增强工具，依赖 Host Sampling。
+`analyze_user_task` 是首选任务分析入口，`recommend_capabilities` 是较底层推荐入口。`ask_conductor` 作为第二阶段或可选增强工具，依赖 Host Sampling。它不能替代 `analyze_user_task/recommend_capabilities -> 具体访问工具` 的受控链路，也不能把项目变成完整 Host 或聊天代理。
 
 ### 12. MCP 客户端原语和工具适配器
 
@@ -178,6 +215,25 @@ read_result
 - 对上游 Roots 请求，第一版只能返回配置 allowlist 或外部 Host Roots 的受限交集。
 - 对上游 Elicitation 请求，第一版默认只允许非敏感、低风险参数补充；危险确认仍必须走 `mcp-conductor` 自己的风险策略。
 
+### 13. Host / Agent Orchestrator（独立后续）
+
+这是后续可选方向，不属于当前 MCP Gateway Server 第一版。
+
+主要职责：
+
+- 接收用户输入。
+- 控制模型调用和 agent loop。
+- 在每次用户输入和每次 loop 步骤前主动调用 `mcp-conductor-core` 的 step routing API。
+- 把筛选后的候选能力转换成本轮模型可用工具面。
+- 接收模型工具调用意图，再通过 `mcp-conductor-core` 的公开工具执行上游能力。
+- 将工具结果作为下一轮 `step_content`，继续循环或结束。
+
+边界：
+
+- 它可以使用 `mcp-conductor-core`，但不能和当前 `mcp_conductor` Gateway 包混成一个入口。
+- 如果开发，建议使用独立包名或目录，例如 `mcp_conductor_agent`。
+- 它才是能强制每轮筛选的层；当前 MCP Server 只能被动响应调用。
+
 ## 第一阶段建议优先级
 
 1. 对外 MCP Server
@@ -190,3 +246,14 @@ read_result
 8. 网关执行引擎
 9. 结果管理器
 10. MCP 客户端原语和工具适配器
+
+## 后续优先级
+
+Gateway Core 稳定后，下一阶段建议按这个顺序继续：
+
+1. Step Routing Session。
+2. `analyze_agent_step`。
+3. 本地 `agent_loop_demo.py`。
+4. Host Sampling / 语义检索增强。
+5. proxy / hybrid 动态工具注册。
+6. 独立 Host / Agent Orchestrator。

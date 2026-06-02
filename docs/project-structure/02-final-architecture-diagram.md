@@ -70,7 +70,7 @@ flowchart TB
         Discovery["discovery<br/>tools/resources/prompts 发现"]
         Registry["registry<br/>能力注册表 / 工具卡片"]
         Routing["routing<br/>规则推荐 / Host 采样路由器"]
-        Execution["execution<br/>调用前校验 / 上游工具执行"]
+        Execution["execution<br/>访问前校验 / 上游能力访问"]
         Policy["policy<br/>risk_policy / confirmation / roots"]
         Results["results<br/>summary / preview / result_id / pagination"]
         Primitives["primitives<br/>Host 原语适配器<br/>上游原语桥接"]
@@ -108,10 +108,10 @@ flowchart TB
 
 - `server.py` 只负责创建 FastMCP 服务和注册对外工具。
 - `public_tools` 只调用 `GatewayRuntime`，不直接访问上游 Client。
-- `routing` 只负责推荐能力，不执行工具。
-- `execution` 必须经过推荐凭证、schema、risk policy、Roots/allowlist 校验后才能调用上游工具。
+- `routing` 只负责推荐能力，不执行或访问上游能力。
+- `execution` 必须经过推荐凭证、schema、risk policy、Roots/allowlist 校验后才能访问上游能力。
 - `policy` 不依赖 FastMCP。
-- `results` 不调用上游工具。
+- `results` 不调用或访问上游能力。
 - `primitives` 只处理协议协作能力，不负责业务路由。
 
 ## 对外工具
@@ -123,23 +123,38 @@ flowchart LR
     Host["外部 Host / Model"]
     Tools["mcp-conductor 对外工具"]
 
+    Analyze["analyze_user_task"]
     List["list_upstream_capabilities"]
+    Exposure["list_exposed_capabilities"]
     Recommend["recommend_capabilities"]
     Call["call_upstream_tool"]
+    Resource["read_upstream_resource"]
+    Template["read_upstream_resource_template"]
+    Prompt["get_upstream_prompt"]
     Read["read_result"]
 
     Host --> Tools
+    Tools --> Analyze
     Tools --> List
+    Tools --> Exposure
     Tools --> Recommend
     Tools --> Call
+    Tools --> Resource
+    Tools --> Template
+    Tools --> Prompt
     Tools --> Read
 ```
 
 各工具职责：
 
+- `analyze_user_task`：首选任务分析入口，根据当前用户任务或 agent loop 步骤返回候选能力和下一步公开工具调用参数。
 - `list_upstream_capabilities`：分页列出能力摘要，不返回完整内部状态。
-- `recommend_capabilities`：根据用户任务返回候选能力、schema、`recommendation_id` 和 `route_token`。
+- `list_exposed_capabilities`：列出当前 `exposure` 配置下的 proxy/hybrid 暴露计划，目前不动态注册上游工具。
+- `recommend_capabilities`：较底层推荐入口，根据用户任务返回候选能力、schema、`recommendation_id`、`route_token`、`next_public_tool` 和 `ready_to_call_arguments`。
 - `call_upstream_tool`：只调用已推荐、已校验、风险策略允许的上游 tool。
+- `read_upstream_resource`：读取已推荐、已校验、风险策略允许的上游 resource。
+- `read_upstream_resource_template`：校验参数并展开已推荐 resource template，再读取具体资源 URI。
+- `get_upstream_prompt`：获取已推荐、已校验的上游 prompt。
 - `read_result`：读取当前 session 可访问的缓存结果。
 
 ## 推荐与执行链路
@@ -157,26 +172,35 @@ sequenceDiagram
 
     User->>Host: 提出任务
     Host->>Model: 构建上下文并暴露 mcp-conductor tools
-    Model->>Host: 工具调用意图 recommend_capabilities
-    Host->>Conductor: recommend_capabilities(user_task, context_summary)
+    Model->>Host: 工具调用意图 analyze_user_task
+    Host->>Conductor: analyze_user_task(user_task, context_summary)
     Conductor->>Registry: 查询能力卡片
     Conductor->>Policy: 过滤禁用和明显危险能力
-    Conductor-->>Host: recommendation_id + route_token + candidates + schema
+    Conductor-->>Host: recommendation_id + route_token + candidates + schema + next_public_tool + ready_to_call_arguments
 
     Host->>Model: 将推荐结果放回上下文
-    Model->>Host: 工具调用意图 call_upstream_tool
-    Host->>Conductor: call_upstream_tool(recommendation_id, route_token, capability_id, arguments)
+    Model->>Host: 工具调用意图
+    Host->>Conductor: 按能力类型调用公开工具并携带推荐凭证
 
     Conductor->>Policy: 校验推荐凭证 / schema / risk_policy / Roots
 
-    alt 只读且策略允许
+    alt tool 且只读或已确认
         Conductor->>Upstream: tools/call
+    else resource
+        Conductor->>Upstream: resources/read
+    else resource template
+        Conductor->>Upstream: 展开 URI 后 resources/read
+    else prompt
+        Conductor->>Upstream: prompts/get
+    else 危险或未知风险
+        Conductor-->>Host: confirmation_required 或 Elicitation 请求
+    end
+
+    alt 上游访问成功
         Upstream-->>Conductor: 原始结果
         Conductor->>Results: summary / preview / result_id
         Results-->>Conductor: 整理后的结果
         Conductor-->>Host: summary + preview + optional result_id
-    else 危险或未知风险
-        Conductor-->>Host: confirmation_required 或 Elicitation 请求
     end
 
     Host->>Model: 工具结果回填上下文
@@ -280,6 +304,33 @@ flowchart TB
 - 多用户/session 隔离。
 - 远程上游凭证管理。
 - 部署文档和安全策略。
+
+## 可选 Host / Agent Orchestrator
+
+当前最终目标图仍以 `mcp-conductor` 作为 MCP Gateway Server 为核心。若后续要实现“每次用户输入和每次 agent loop 步骤都先筛选能力”，需要在外层增加 Orchestrator：
+
+```mermaid
+flowchart LR
+    User["用户"]
+    Agent["mcp-conductor-agent<br/>Host wrapper / Agent Orchestrator"]
+    Model["外部大模型"]
+    Core["mcp-conductor-core<br/>MCP Gateway Server"]
+    Upstream["上游 MCP Servers"]
+
+    User --> Agent
+    Agent -->|"start_routing_session / analyze_user_task"| Core
+    Core -->|"候选能力 + route_token"| Agent
+    Agent --> Model
+    Model -->|"工具调用意图"| Agent
+    Agent -->|"route-gated public tools"| Core
+    Core --> Upstream
+    Upstream --> Core
+    Core -->|"summary / preview / result_id"| Agent
+    Agent -->|"analyze_agent_step(step_content)"| Core
+    Agent --> User
+```
+
+这个 Orchestrator 不应该混入当前 `mcp_conductor` Gateway 入口。它可以使用 Gateway 的公开工具，但负责控制模型 loop、工具面构建和每轮强制触发。
 
 ## 最终结构总结
 

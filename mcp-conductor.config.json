@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "learn-mcp-server": {
+      "transport": "stdio",
+      "command": "uvx",
+      "args": [
+        "--from",
+        "learn-mcp-server==0.1.0",
+        "learn-mcp-server"
+      ],
+      "risk_policy": "read_only_only"
+    }
+  }
+}

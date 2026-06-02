@@ -28,6 +28,7 @@ class FakeSession:
                         "type": "object",
                         "properties": {"pr_number": {"type": "integer"}},
                     },
+                    annotations=SimpleNamespace(readOnlyHint=True),
                 )
             ]
         )
@@ -65,6 +66,29 @@ class FakeSession:
         self.calls.append((name, arguments))
         return {"name": name, "arguments": arguments}
 
+    def read_resource(self, uri: str):
+        return [
+            SimpleNamespace(
+                uri=uri,
+                mimeType="text/markdown",
+                text="# README\nProject notes.",
+            )
+        ]
+
+    def get_prompt(self, name: str, arguments: dict | None = None):
+        return SimpleNamespace(
+            description="Summarize a PR",
+            messages=[
+                {
+                    "role": "user",
+                    "content": {
+                        "type": "text",
+                        "text": f"Summarize PR {arguments['pr_number']}",
+                    },
+                }
+            ],
+        )
+
 
 def test_upstream_client_normalizes_list_tools_response() -> None:
     client = UpstreamClient(
@@ -82,6 +106,7 @@ def test_upstream_client_normalizes_list_tools_response() -> None:
                 "type": "object",
                 "properties": {"pr_number": {"type": "integer"}},
             },
+            "annotations": {"readOnlyHint": True},
         }
     ]
 
@@ -111,6 +136,35 @@ def test_upstream_client_calls_session_tool() -> None:
 
     assert result == {"name": "get_pr_checks", "arguments": {"pr_number": 12}}
     assert session.calls == [("get_pr_checks", {"pr_number": 12})]
+
+
+def test_upstream_client_reads_resource() -> None:
+    client = UpstreamClient(
+        UpstreamServerConfig(server_id="github"),
+        session=FakeSession(),
+    )
+
+    result = client.read_resource("repo://owner/project/README.md")
+
+    assert result == [
+        {
+            "uri": "repo://owner/project/README.md",
+            "mimeType": "text/markdown",
+            "text": "# README\nProject notes.",
+        }
+    ]
+
+
+def test_upstream_client_gets_prompt() -> None:
+    client = UpstreamClient(
+        UpstreamServerConfig(server_id="github"),
+        session=FakeSession(),
+    )
+
+    result = client.get_prompt("summarize_pr", {"pr_number": 12})
+
+    assert result["description"] == "Summarize a PR"
+    assert result["messages"][0]["content"]["text"] == "Summarize PR 12"
 
 
 def test_upstream_client_requires_session_before_calling() -> None:

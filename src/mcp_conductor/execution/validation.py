@@ -3,6 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from jsonschema import SchemaError
+from jsonschema.exceptions import best_match
+from jsonschema.validators import validator_for
+
 
 @dataclass(slots=True)
 class ToolCallValidationInput:
@@ -27,22 +31,24 @@ def validate_arguments(
         arguments: dict[str, Any],
         input_schema: dict[str, Any],
 ) -> list[str]:
-    errors: list[str] = []
-    if input_schema.get("type") == "object" and not isinstance(arguments, dict):
-        return ["arguments must be an object"]
+    if not input_schema:
+        return []
 
-    for required_key in input_schema.get("required", []):
-        if required_key not in arguments:
-            errors.append(f"missing required argument: {required_key}")
+    try:
+        validator_class = validator_for(input_schema)
+        validator_class.check_schema(input_schema)
+        validator = validator_class(input_schema)
+    except SchemaError as exc:
+        return [f"invalid input schema: {exc.message}"]
 
-    properties = input_schema.get("properties", {})
-    for key, value in arguments.items():
-        expected = properties.get(key, {}).get("type")
-        if expected == "integer" and not isinstance(value, int):
-            errors.append(f"argument {key} must be an integer")
-        elif expected == "string" and not isinstance(value, str):
-            errors.append(f"argument {key} must be a string")
-        elif expected == "boolean" and not isinstance(value, bool):
-            errors.append(f"argument {key} must be a boolean")
+    errors = sorted(
+        validator.iter_errors(arguments),
+        key=lambda error: [str(part) for part in error.path],
+    )
+    if not errors:
+        return []
 
-    return errors
+    best_error = best_match(errors)
+    path = ".".join(str(part) for part in best_error.path)
+    prefix = f"argument {path}: " if path else ""
+    return [f"{prefix}{best_error.message}"]

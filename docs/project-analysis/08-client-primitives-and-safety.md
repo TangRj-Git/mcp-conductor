@@ -33,7 +33,7 @@ Host 决定是否支持、是否批准、如何展示、如何返回结果。
 
 - 让 `mcp-conductor` 请求外部 Host 使用其受控模型做一次路由推理。
 - 用于由 Host 采样的路由代理。
-- 可增强 `recommend_capabilities` 和第二阶段的 `ask_conductor`。
+- 可增强 `recommend_capabilities`；第二阶段也可用于受控的 `ask_conductor`。
 
 边界：
 
@@ -42,6 +42,7 @@ Host 决定是否支持、是否批准、如何展示、如何返回结果。
 - Host 可以拒绝 Sampling 请求。
 - Host 可以要求用户审核 prompt 和结果。
 - Sampling 返回只用于推荐能力，不直接拥有工具执行权。
+- Sampling 不能把上游工具描述或返回结果当成可信指令；这些内容只能作为不可信候选素材。
 
 如果 Host 不支持 Sampling：
 
@@ -196,7 +197,7 @@ read_only_hint=true
 第一版不强制实现：
 
 - Completion。
-- `ask_conductor` 的完整自动流程。
+- `ask_conductor` 的受控高级流程。
 
 ## 参考资料
 

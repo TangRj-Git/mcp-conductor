@@ -78,6 +78,7 @@ class PendingAction:
     capability_id: str
     arguments: dict[str, Any]
     risk_level: RiskLevel
+    confirmed: bool = False
 
 
 @dataclass(slots=True)

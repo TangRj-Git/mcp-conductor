@@ -4,6 +4,15 @@
 
 `mcp-conductor` 必须对外保持标准 MCP Server 形态。
 
+推荐的使用模型不是“把所有 MCP Server 都配置到外部 Host”，而是：
+
+```text
+外部 Host 只配置 mcp-conductor。
+mcp-conductor 内部再配置多个上游 MCP Server。
+```
+
+这样外部模型每轮只需要理解少量高级工具，再优先通过 `analyze_user_task` 获取当前任务相关的候选能力。`recommend_capabilities` 保留为较底层入口。
+
 本地开发时，外部 Host 可以这样配置：
 
 ```json
@@ -85,14 +94,38 @@ mcp-conductor = "mcp_conductor.cli:main"
 
 这份配置由 `mcp-conductor` 读取，不由外部 Host 直接读取。
 
-内部配置仍需在实现前确定：
+内部配置当前已经支持 `upstreamServers` 和 `mcpServers` 两种键名，已支持 `stdio` 和 `streamable_http` 两种传输类型。
 
-- 默认文件名和默认搜索路径。
-- 是否兼容常见 Host 的 `mcpServers` 配置格式。
-- 配置加载优先级：默认文件、环境变量、CLI 参数之间谁覆盖谁。
-- 凭证引用语法是否统一为 `${NAME}`。
+本地默认加载流程：
 
-`risk_policy` 第一版建议先保留少量枚举：
+```text
+uv run mcp-conductor
+  -> CLI 检查当前工作目录是否存在 mcp-conductor.config.json
+  -> 存在则把它作为内部上游配置文件
+  -> load_config 先加载该配置文件同目录下的 .env
+  -> parse_config 解析 mcpServers / upstreamServers
+  -> 对 command / args / url / cwd / env / allowed_roots 中的 ${NAME} 做环境变量替换
+  -> GatewayRuntime 根据解析结果创建上游 Client
+```
+
+显式传入 `--config` 时优先使用该路径：
+
+```bash
+uv run mcp-conductor --config E:\SoftwareProject\mcp-conductor\mcp-conductor.config.json
+```
+
+如果没有显式 `--config`，且当前工作目录没有 `mcp-conductor.config.json`，则使用空配置启动。此时 `mcp-conductor` 仍能启动，但不会发现任何上游能力。
+
+`.env` 加载规则：
+
+- 只加载配置文件同目录下的 `.env`。
+- 只支持简单 `KEY=VALUE` 行。
+- 空行和 `#` 注释会被忽略。
+- 不覆盖当前进程中已经存在的同名环境变量。
+- 支持单引号或双引号包裹值。
+- 缺失 `${NAME}` 对应环境变量时，配置解析会失败。
+
+`risk_policy` 第一版确定保留少量枚举：
 
 ```text
 read_only_only
@@ -144,18 +177,27 @@ mcp-conductor
 
 ## 对外暴露工具
 
-第一版可以只暴露少量工具：
+当前第一版对外暴露少量高层工具：
 
 ```text
+analyze_user_task
 list_upstream_capabilities
+list_exposed_capabilities
 recommend_capabilities
 call_upstream_tool
+read_upstream_resource
+read_upstream_resource_template
+get_upstream_prompt
 read_result
 ```
 
 这样外部模型只需要理解 `mcp-conductor` 这几个高级工具，而不是直接面对所有上游工具。
 
-`ask_conductor` 是第二阶段或可选增强工具。它需要 Host 支持 Sampling，否则只能退化为规则/标签推荐。
+`analyze_user_task` 是推荐的首选入口，适合 Codex、Claude Code 等 Host 在用户任务开始时或 agent loop 中的某个步骤调用。`recommend_capabilities` 保留为较底层的推荐工具。
+
+`list_exposed_capabilities` 是 exposure/proxy/hybrid 方向的诊断入口。它只展示当前配置下哪些 read-only 上游 tool 会进入暴露计划，不代表这些上游 tool 已经被动态注册为 Host 可直接看到的 MCP tools。
+
+`ask_conductor` 是后续可选增强工具。它需要 Host 支持 Sampling，否则只能退化为规则/标签推荐；它不能替代当前 `analyze_user_task/recommend_capabilities -> 具体访问工具` 的受控链路。
 
 ## 典型调用流程
 
@@ -164,13 +206,13 @@ read_result
 ```text
 用户向外部 Host 提问
   ↓
-外部模型通常先调用 mcp-conductor 的 recommend_capabilities
+外部模型优先调用 mcp-conductor 的 analyze_user_task
   ↓
-mcp-conductor 分析任务，从上游能力中筛选候选工具
+mcp-conductor 分析任务，从上游能力中筛选候选能力
   ↓
-mcp-conductor 返回候选能力、schema、recommendation_id / route_token
+mcp-conductor 返回候选能力、schema、recommendation_id / route_token、next_public_tool 和 ready_to_call_arguments
   ↓
-外部模型携带 recommendation_id / route_token 调用 call_upstream_tool
+外部模型使用推荐项中的 next_public_tool 和 ready_to_call_arguments 调用对应公开工具
   ↓
 mcp-conductor 校验推荐凭证、schema、risk_policy 和 Roots/allowlist
   ↓
@@ -203,3 +245,5 @@ mcp-conductor
 外部 Host 只配置 mcp-conductor
 其他 MCP Server 作为 mcp-conductor 的内部上游
 ```
+
+如果要让每次用户输入和每次内部 agent loop 步骤都必须先经过能力筛选，需要把 `mcp-conductor` 放到一个更外层的 Host wrapper 或 Agent Orchestrator 后面。这个外层运行时负责主动调用 `analyze_user_task` 或后续 `analyze_agent_step`，而不是等待 Codex、Claude Code 自己决定是否调用。

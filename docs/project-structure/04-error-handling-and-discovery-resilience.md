@@ -6,13 +6,13 @@
 
 它主要回答三个问题：
 
-1. 上游工具执行失败时，`mcp-conductor` 应该如何向外部 Host 返回结构化错误。
+1. 上游工具执行、资源读取或 Prompt 获取失败时，`mcp-conductor` 应该如何向外部 Host 返回结构化错误。
 2. 某个上游 Server 或某类能力发现失败时，是否应该影响其他上游能力。
 3. `discovery_errors` 和 `unavailable_upstreams` 分别表达什么。
 
-## 上游工具错误
+## 上游访问错误
 
-`mcp-conductor` 会包装上游工具执行失败，而不是把异常直接抛给外部 Host。
+`mcp-conductor` 会包装上游访问失败，而不是把异常直接抛给外部 Host。
 
 当上游 `tools/call` 失败时，`call_upstream_tool` 会返回：
 
@@ -31,6 +31,23 @@
 ```
 
 同步和异步执行路径都使用同一种返回结构，方便外部 Host 统一处理错误。
+
+当上游 resource、resource template 或 prompt 访问失败时，对应公开工具会返回：
+
+```json
+{
+  "status": "error",
+  "error_code": "upstream_capability_error",
+  "message": "Upstream capability access failed.",
+  "details": {
+    "capability_id": "docs.resources.project_notes",
+    "upstream_server_id": "docs",
+    "capability_type": "resource",
+    "error_type": "RuntimeError",
+    "error": "..."
+  }
+}
+```
 
 ## 发现容错
 

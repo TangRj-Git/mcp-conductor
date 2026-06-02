@@ -51,6 +51,8 @@ Host 是大模型运行环境和总控层。
 
 `mcp-conductor` 对外仍然是一个 MCP Server，但内部会连接多个上游 MCP Server。
 
+它存在的主要原因是：避免外部 Host 直接配置大量 MCP Server 后，把全部底层工具、资源和 prompt 都暴露给大模型，造成上下文膨胀和工具选择准确性下降。
+
 它负责：
 
 - 被外部 Host 像普通 MCP Server 一样配置。
@@ -59,7 +61,8 @@ Host 是大模型运行环境和总控层。
 - 为每个上游 MCP Server 创建或维护独立 MCP Client/session。
 - 发现上游 MCP Server 的能力。
 - 建立统一能力注册表。
-- 根据用户任务筛选、推荐或调用上游能力。
+- 根据用户任务筛选并推荐上游能力。
+- 在外部模型携带有效推荐凭证和参数后，受控访问上游能力。
 - 管理上游返回的大结果。
 - 将摘要、预览、分页或 `result_id` 返回给外部 Host。
 
@@ -81,7 +84,7 @@ Host 是大模型运行环境和总控层。
 - 阻止外部 Host 直接配置其他 MCP Server。
 - 管理完整模型生命周期。
 
-它可以通过 Host 采样路由器或其他受控模型能力辅助筛选上游工具，但这只是内部路由逻辑，不等于它成为完整 Host。
+它可以通过 Host 采样路由器或其他受控模型能力辅助筛选上游能力，但这只是内部路由逻辑，不等于它成为完整 Host。
 
 如果需要模型推理，`mcp-conductor` 应通过 MCP Sampling 请求外部 Host 使用其受控模型。Host 仍然掌握模型选择、权限、用户批准和结果是否返回给 Server 的控制权。
 
@@ -131,6 +134,8 @@ mcp-conductor
 - 完整模型上下文调度系统。
 - 外部 Host 配置管理器。
 - 全局 MCP 权限中心。
+- 动态替外部 Host 改写真实工具列表。
+- 让外部模型一次看到全部上游能力。
 - 绕过 Host 自己配置模型 API 密钥。
 - 绕过 Host 自己向用户确认危险操作。
 
@@ -144,3 +149,35 @@ mcp-conductor
 ```
 
 如果外部 Host 同时配置 `mcp-conductor` 和所有上游 MCP Server，外部模型仍然可能直接看到和调用底层工具，从而绕过 `mcp-conductor` 的筛选与结果管理。
+
+## 对“每轮都先筛选”的结论
+
+用户想要的理想体验可以表述为：
+
+```text
+Codex / Claude Code 开始处理用户问题
+  -> 先把当前用户问题交给 mcp-conductor 筛选工具
+  -> 模型只在筛选后的工具范围内选择
+  -> 每次工具结果或内部新步骤出现
+  -> 再把当前步骤内容交给 mcp-conductor 筛选工具
+  -> 模型继续处理
+```
+
+这个体验本质上是 Host/Agent Runtime 的职责，因为只有 Host/Agent Runtime 才能控制：
+
+- 用户输入进入模型之前发生什么。
+- 每次模型生成工具调用之前看到哪些工具。
+- 工具结果回填模型之前是否要重新筛选能力。
+- agent loop 什么时候继续、暂停、重试或结束。
+
+`mcp-conductor` 当前作为 MCP Server，只能在被调用时返回推荐和执行上游能力。它可以成为每轮筛选的核心服务，但不能自己强制成为每轮入口。
+
+因此后续架构应拆成：
+
+```text
+mcp-conductor-core
+  当前 Gateway Server，负责上游配置、发现、推荐、凭证、执行、安全和结果。
+
+mcp-conductor-agent
+  后续 Host wrapper / Agent Orchestrator，负责控制每次用户输入和每次 loop 步骤是否必须调用 core。
+```

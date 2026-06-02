@@ -1,1 +1,1 @@
-"""Upstream MCP client management."""
+"""Internal clients for configured upstream MCP servers."""

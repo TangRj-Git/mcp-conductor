@@ -20,7 +20,8 @@
 
 - `01-project-architecture.md`：第一版推荐项目架构、目录结构、模块职责和顶层 `main.py` 处理策略。
 - `02-final-architecture-diagram.md`：最终目标架构图，包括总体拓扑、内部模块、调用链路、安全确认和 primitives 双向边界。
-- `03-dangerous-action-confirmation.md`：危险操作确认结构，说明 `pending_action_id`、二次确认、拒绝规则和后续 Elicitation 集成边界。
-- `04-error-handling-and-discovery-resilience.md`：错误处理和发现容错结构，说明上游工具错误、能力发现局部失败和 `discovery_errors` / `unavailable_upstreams` 的区别。
+- `03-dangerous-action-confirmation.md`：危险操作确认结构，说明 `pending_action_id`、Host Elicitation、二次确认和拒绝规则。
+- `04-error-handling-and-discovery-resilience.md`：错误处理和发现容错结构，说明上游访问错误、能力发现局部失败和 `discovery_errors` / `unavailable_upstreams` 的区别。
 - `05-risk-policy-semantics.md`：风险策略语义，说明 `read_only_only`、`confirm_mutations`、`disabled` 三种策略如何影响推荐和执行。
 - `06-real-upstream-integration-prep.md`：真实上游 MCP Server 联调准备，说明下一步如何选择低风险上游、配置、启动、发现、推荐、调用和验证。
+- `07-step-routing-and-agent-orchestrator-structure.md`：后续 step routing、routing session 和可选 Host/Agent Orchestrator 的工程拆分建议。
