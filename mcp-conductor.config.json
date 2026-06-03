@@ -9,6 +9,63 @@
         "learn-mcp-server"
       ],
       "risk_policy": "read_only_only"
+    },
+    "memory-1": {
+      "transport": "stdio",
+      "command": "cmd",
+      "args": [
+        "/c",
+        "npx",
+        "-y",
+        "@modelcontextprotocol/server-memory"
+      ],
+      "risk_policy": "confirm_mutations"
+    },
+    "sequential-thinking-1": {
+      "transport": "stdio",
+      "command": "cmd",
+      "args": [
+        "/c",
+        "npx",
+        "-y",
+        "@modelcontextprotocol/server-sequential-thinking"
+      ],
+      "risk_policy": "read_only_only"
+    },
+    "context7": {
+      "transport": "stdio",
+      "command": "cmd",
+      "args": [
+        "/c",
+        "npx",
+        "-y",
+        "@upstash/context7-mcp"
+      ],
+      "risk_policy": "read_only_only"
+    },
+    "fetch-1": {
+      "transport": "stdio",
+      "command": "uvx",
+      "args": [
+        "mcp-server-fetch"
+      ],
+      "risk_policy": "read_only_only"
+    },
+    "filesystem-project": {
+      "transport": "stdio",
+      "command": "cmd",
+      "args": [
+        "/c",
+        "npx",
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "E:\\SoftwareProject\\mcp-conductor"
+      ],
+      "risk_policy": "confirm_mutations",
+      "roots_policy": "config_allowlist_only",
+      "allowed_roots": [
+        "E:\\SoftwareProject\\mcp-conductor"
+      ]
     }
   }
 }

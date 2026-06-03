@@ -43,6 +43,10 @@
 
 ```text
 analyze_user_task
+start_routing_session
+analyze_agent_step
+list_routing_session_state
+end_routing_session
 list_upstream_capabilities
 list_exposed_capabilities
 recommend_capabilities
@@ -56,6 +60,8 @@ read_result
 这些工具的目标是让外部模型不必直接面对全部上游 MCP Server。外部模型先看到少量高级工具，再优先通过 `analyze_user_task` 获取当前任务或 agent loop 步骤相关的候选能力和调用凭证。`recommend_capabilities` 作为较底层推荐入口保留。
 
 `list_exposed_capabilities` 是当前新增的 proxy/hybrid 暴露计划诊断工具，只展示哪些 read-only 上游 tool 会被当前 `exposure` 配置选中，不代表这些上游 tool 已经动态注册为 Host 可直接看到的 MCP tools。
+
+`start_routing_session`、`analyze_agent_step`、`list_routing_session_state` 和 `end_routing_session` 是当前新增的 Gateway Core step-routing 工具。它们让外层 Host wrapper 或 Agent Orchestrator 可以把每次 loop 步骤单独交给 `mcp-conductor` 筛选能力，但它们仍然不能强制 Codex、Claude Code 这类外部 Host 自动每轮调用。
 
 `ask_conductor` 不作为第一版必需工具，也不能成为把项目带偏成“万能代理”的入口。它只能作为第二阶段或可选增强能力出现，并且只能通过 Host 支持的 Sampling 发起受控路由推理，不能由 `mcp-conductor` 自己私自配置和调用模型。
 
@@ -104,10 +110,10 @@ read_result
 
 这个目标拆成两层：
 
-1. Gateway Server 能力：`mcp-conductor` 提供 `analyze_user_task` / 后续可增加 `analyze_agent_step`，接收当前任务或当前步骤内容，返回候选能力和 route-token-gated 调用参数。
+1. Gateway Server 能力：`mcp-conductor` 提供 `analyze_user_task`、`start_routing_session` 和 `analyze_agent_step`，接收当前任务或当前步骤内容，返回候选能力和 route-token-gated 调用参数。
 2. Host/Agent Orchestrator 能力：外层运行时必须主动在每次用户输入和每次 loop 步骤调用这些工具，并把返回的候选能力作为模型本轮可用工具上下文的一部分。
 
-当前项目只实现了第一层中的 `analyze_user_task`。它可以处理用户任务，也可以通过 `context_summary` 接收当前 loop 状态，但它不能强制 Codex、Claude Code 这类外部 Host 每轮都调用自己。
+当前项目已经实现第一层的 Gateway Core API。它可以处理用户任务，也可以接收单次 loop 步骤内容，但它不能强制 Codex、Claude Code 这类外部 Host 每轮都调用自己。
 
 ### 上下文控制
 

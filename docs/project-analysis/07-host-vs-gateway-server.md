@@ -178,6 +178,6 @@ Codex / Claude Code 开始处理用户问题
 mcp-conductor-core
   当前 Gateway Server，负责上游配置、发现、推荐、凭证、执行、安全和结果。
 
-mcp-conductor-agent
+Host wrapper / Agent Orchestrator
   后续 Host wrapper / Agent Orchestrator，负责控制每次用户输入和每次 loop 步骤是否必须调用 core。
 ```

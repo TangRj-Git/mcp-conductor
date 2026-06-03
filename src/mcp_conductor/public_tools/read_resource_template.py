@@ -13,6 +13,7 @@ async def read_upstream_resource_template_async(
         capability_id: str,
         arguments: dict[str, Any],
         session_id: str | None = None,
+        routing_session_id: str | None = None,
 ) -> dict[str, Any]:
     """Read a recommended upstream resource template after safe expansion."""
     return await runtime.read_upstream_resource_template_async(
@@ -21,4 +22,5 @@ async def read_upstream_resource_template_async(
         capability_id=capability_id,
         arguments=arguments,
         session_id=session_id,
+        routing_session_id=routing_session_id,
     )

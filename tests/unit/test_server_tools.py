@@ -15,6 +15,10 @@ def test_server_exposes_expected_public_tool_names() -> None:
 
     assert {
         "analyze_user_task",
+        "start_routing_session",
+        "analyze_agent_step",
+        "list_routing_session_state",
+        "end_routing_session",
         "list_upstream_capabilities",
         "recommend_capabilities",
         "call_upstream_tool",
@@ -116,6 +120,55 @@ def test_server_list_exposed_capabilities_delegates_to_runtime() -> None:
         "cursor": "2",
         "limit": 5,
         "include_skipped": True,
+    }
+
+
+def test_server_analyze_agent_step_delegates_to_runtime() -> None:
+    class FakeRuntime:
+        def __init__(self) -> None:
+            self.kwargs = None
+
+        async def async_startup(self) -> None:
+            pass
+
+        async def async_shutdown(self) -> None:
+            pass
+
+        def analyze_agent_step(self, **kwargs):
+            self.kwargs = kwargs
+            return {
+                "status": "ok",
+                "routing_round_id": "round_1",
+                "recommended_capabilities": [],
+            }
+
+    async def run() -> FakeRuntime:
+        runtime = FakeRuntime()
+        server = create_server(runtime)
+
+        async with Client(server) as client:
+            result = await client.call_tool(
+                "analyze_agent_step",
+                {
+                    "session_id": "session_1",
+                    "step_index": 2,
+                    "step_type": "tool_result",
+                    "step_content": "Need docs next",
+                    "limit": 3,
+                },
+            )
+
+        assert result.data["status"] == "ok"
+        return runtime
+
+    runtime = asyncio.run(run())
+
+    assert runtime.kwargs == {
+        "session_id": "session_1",
+        "step_index": 2,
+        "step_type": "tool_result",
+        "step_content": "Need docs next",
+        "limit": 3,
     }
 
 
@@ -284,6 +337,44 @@ def test_server_call_tool_forwards_pending_action_id() -> None:
     runtime = asyncio.run(run())
 
     assert runtime.kwargs["pending_action_id"] == "pending_1"
+
+
+def test_server_call_tool_forwards_routing_session_id() -> None:
+    class FakeRuntime:
+        def __init__(self) -> None:
+            self.kwargs = None
+
+        async def async_startup(self) -> None:
+            pass
+
+        async def async_shutdown(self) -> None:
+            pass
+
+        async def call_upstream_tool_async(self, **kwargs):
+            self.kwargs = kwargs
+            return {"status": "ok"}
+
+    async def run() -> FakeRuntime:
+        runtime = FakeRuntime()
+        server = create_server(runtime)
+
+        async with Client(server) as client:
+            await client.call_tool(
+                "call_upstream_tool",
+                {
+                    "recommendation_id": "rec_1",
+                    "route_token": "route_1",
+                    "capability_id": "github.tools.get_pr_checks",
+                    "arguments": {"pr_number": 12},
+                    "routing_session_id": "session_1",
+                },
+            )
+
+        return runtime
+
+    runtime = asyncio.run(run())
+
+    assert runtime.kwargs["routing_session_id"] == "session_1"
 
 
 def test_server_passes_context_session_id_to_runtime_calls() -> None:

@@ -279,6 +279,10 @@ enabled
 
 ```text
 analyze_user_task
+start_routing_session
+analyze_agent_step
+list_routing_session_state
+end_routing_session
 list_upstream_capabilities
 list_exposed_capabilities
 recommend_capabilities
@@ -292,6 +296,10 @@ read_result
 其中：
 
 - `analyze_user_task`：首选入口，根据当前用户任务或 agent loop 步骤推荐候选能力，并返回下一步公开工具调用参数。
+- `start_routing_session`：为一个用户任务创建轻量 routing session，并返回第一轮推荐。
+- `analyze_agent_step`：在已有 routing session 中只根据当前单步 `step_content` 推荐候选能力。
+- `list_routing_session_state`：查看 compact routing session 状态。
+- `end_routing_session`：释放 routing session。
 - `list_upstream_capabilities`：列出内部发现到的能力摘要，支持分页。
 - `list_exposed_capabilities`：列出当前 `exposure` 配置下的 proxy/hybrid 暴露计划，目前仅用于诊断，不动态注册上游工具。
 - `recommend_capabilities`：较底层推荐入口，根据用户任务推荐候选能力。
@@ -393,7 +401,8 @@ Host 可以拒绝 Sampling，也可以要求用户确认。
         "capability_id": "github.tools.get_pr_checks",
         "arguments": {
           "pr_number": 12
-        }
+        },
+        "routing_session_id": "session_abc"
       },
       "usage_hint": "Use call_upstream_tool with ready_to_call_arguments to access tool capability github.tools.get_pr_checks.",
       "route_token": "route_abc"
@@ -724,6 +733,10 @@ mcp-conductor-core: analyze_agent_step
 - 能力注册表。
 - 规则/标签推荐。
 - `analyze_user_task`。
+- `start_routing_session`。
+- `analyze_agent_step`。
+- `list_routing_session_state`。
+- `end_routing_session`。
 - `recommend_capabilities`。
 - `call_upstream_tool`。
 - `read_upstream_resource`。
@@ -738,8 +751,6 @@ mcp-conductor-core: analyze_agent_step
 
 第二阶段增加智能路由和更完整能力：
 
-- Step routing session。
-- `analyze_agent_step`。
 - 本地 demo orchestrator。
 - Host 采样路由器。
 - 语义/向量检索。
@@ -750,7 +761,7 @@ mcp-conductor-core: analyze_agent_step
 
 如果目标是强制接管每次用户输入和每次 agent loop 步骤，需要增加独立 Host/Agent Runtime：
 
-- `mcp-conductor-agent`。
+- Host wrapper / Agent Orchestrator。
 - Codex / Claude Code 外层 wrapper。
 - IDE/plugin 层。
 - 自己实现的 MCP Host。

@@ -124,6 +124,10 @@ flowchart LR
     Tools["mcp-conductor 对外工具"]
 
     Analyze["analyze_user_task"]
+    StartSession["start_routing_session"]
+    AnalyzeStep["analyze_agent_step"]
+    SessionState["list_routing_session_state"]
+    EndSession["end_routing_session"]
     List["list_upstream_capabilities"]
     Exposure["list_exposed_capabilities"]
     Recommend["recommend_capabilities"]
@@ -135,6 +139,10 @@ flowchart LR
 
     Host --> Tools
     Tools --> Analyze
+    Tools --> StartSession
+    Tools --> AnalyzeStep
+    Tools --> SessionState
+    Tools --> EndSession
     Tools --> List
     Tools --> Exposure
     Tools --> Recommend
@@ -148,9 +156,14 @@ flowchart LR
 各工具职责：
 
 - `analyze_user_task`：首选任务分析入口，根据当前用户任务或 agent loop 步骤返回候选能力和下一步公开工具调用参数。
+- `start_routing_session`：为一个用户任务创建轻量 routing session，并返回第一轮推荐。
+- `analyze_agent_step`：在已有 routing session 中只根据当前单步 `step_content` 推荐候选能力。
+- `list_routing_session_state`：返回 compact routing session 状态，用于调试和 Inspector。
+- `end_routing_session`：释放 routing session 状态。
 - `list_upstream_capabilities`：分页列出能力摘要，不返回完整内部状态。
 - `list_exposed_capabilities`：列出当前 `exposure` 配置下的 proxy/hybrid 暴露计划，目前不动态注册上游工具。
 - `recommend_capabilities`：较底层推荐入口，根据用户任务返回候选能力、schema、`recommendation_id`、`route_token`、`next_public_tool` 和 `ready_to_call_arguments`。
+- `start_routing_session` / `analyze_agent_step` 返回的推荐项会在 `ready_to_call_arguments` 中携带 `routing_session_id`，后续访问工具会用它记录成功调用和失败调用。
 - `call_upstream_tool`：只调用已推荐、已校验、风险策略允许的上游 tool。
 - `read_upstream_resource`：读取已推荐、已校验、风险策略允许的上游 resource。
 - `read_upstream_resource_template`：校验参数并展开已推荐 resource template，再读取具体资源 URI。
@@ -177,6 +190,7 @@ sequenceDiagram
     Conductor->>Registry: 查询能力卡片
     Conductor->>Policy: 过滤禁用和明显危险能力
     Conductor-->>Host: recommendation_id + route_token + candidates + schema + next_public_tool + ready_to_call_arguments
+    Note over Conductor,Host: routing session 内的 ready_to_call_arguments 还包含 routing_session_id
 
     Host->>Model: 将推荐结果放回上下文
     Model->>Host: 工具调用意图
@@ -312,7 +326,7 @@ flowchart TB
 ```mermaid
 flowchart LR
     User["用户"]
-    Agent["mcp-conductor-agent<br/>Host wrapper / Agent Orchestrator"]
+    Agent["Host wrapper<br/>Agent Orchestrator"]
     Model["外部大模型"]
     Core["mcp-conductor-core<br/>MCP Gateway Server"]
     Upstream["上游 MCP Servers"]

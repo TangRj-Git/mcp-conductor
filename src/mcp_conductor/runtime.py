@@ -30,6 +30,7 @@ from .results.pagination import is_valid_limit, parse_cursor
 from .routing.recommender import build_recommended_capability, create_empty_recommendation
 from .routing.rules import select_candidate_cards
 from .routing.schemas import recommendation_input_schema
+from .routing.session import RoutingSessionStore, create_routing_round_id
 from .upstream.manager import UpstreamClientManager
 
 
@@ -62,6 +63,7 @@ class GatewayRuntime:
     result_preview_limit: int = 20
     result_manager: ResultManager | None = None
     recommendations: dict[str, Recommendation] = field(default_factory=dict)
+    routing_sessions: RoutingSessionStore = field(default_factory=RoutingSessionStore)
     pending_actions: PendingActionStore = field(default_factory=PendingActionStore)
     discovery_errors: list[dict[str, str]] = field(default_factory=list)
     _owns_tool_executor: bool = field(default=False, init=False)
@@ -123,6 +125,7 @@ class GatewayRuntime:
     def _reset_volatile_state(self) -> None:
         """Clear per-lifecycle credentials and cached results before startup."""
         self.recommendations.clear()
+        self.routing_sessions.clear()
         self.pending_actions = PendingActionStore()
         if self.result_manager is not None:
             self.result_manager.cache.values.clear()
@@ -231,6 +234,7 @@ class GatewayRuntime:
             user_task: str,
             context_summary: str | None = None,
             limit: int = 10,
+            deprioritized_capability_ids: set[str] | None = None,
     ) -> dict[str, Any]:
         """Recommend a small set of callable upstream tools for a user task."""
         if not is_valid_limit(limit):
@@ -257,7 +261,18 @@ class GatewayRuntime:
             )
         ]
         cards = [build_capability_card(capability) for capability in candidate_capabilities]
-        selected_cards = select_candidate_cards(cards, user_task=routing_text, limit=limit)
+        selection_limit = len(cards) if deprioritized_capability_ids else limit
+        selected_cards = select_candidate_cards(
+            cards,
+            user_task=routing_text,
+            limit=selection_limit,
+        )
+        if deprioritized_capability_ids:
+            selected_cards = self._deprioritize_candidate_cards(
+                selected_cards,
+                deprioritized_capability_ids=deprioritized_capability_ids,
+            )
+        selected_cards = selected_cards[:limit]
         recommendation = create_empty_recommendation()
 
         for card in selected_cards:
@@ -293,6 +308,142 @@ class GatewayRuntime:
             ),
         }
 
+    def start_routing_session(
+            self,
+            *,
+            user_task: str,
+            context_summary: str | None = None,
+            limit: int = 10,
+    ) -> dict[str, Any]:
+        """Create a routing session and return the first recommendation."""
+        if not is_valid_limit(limit):
+            return self._invalid_limit_error()
+        if not user_task.strip():
+            return self._error(
+                "invalid_user_task",
+                "user_task must contain text.",
+            )
+
+        self._prune_expired_state()
+        session = self.routing_sessions.create(original_task_summary=user_task)
+        recommendation = self.recommend_capabilities(
+            user_task=user_task,
+            context_summary=context_summary,
+            limit=limit,
+        )
+        if recommendation.get("status") != "ok":
+            self.routing_sessions.end(session.session_id)
+            return recommendation
+
+        self._record_routing_recommendation(
+            session.session_id,
+            recommendation,
+        )
+        self._attach_routing_session_id_to_recommendation(
+            recommendation,
+            routing_session_id=session.session_id,
+        )
+        return {
+            **recommendation,
+            "session_id": session.session_id,
+            "routing_session_expires_at": session.expires_at.isoformat(),
+            "next_step": (
+                "Use a recommended capability now, or call analyze_agent_step "
+                "with the next single agent-loop step."
+            ),
+        }
+
+    def analyze_agent_step(
+            self,
+            *,
+            session_id: str,
+            step_index: int,
+            step_type: str,
+            step_content: str,
+            limit: int = 10,
+    ) -> dict[str, Any]:
+        """Analyze one loop step and recommend capabilities for that step."""
+        if not is_valid_limit(limit):
+            return self._invalid_limit_error()
+        if not step_content.strip():
+            return self._error(
+                "invalid_step_content",
+                "step_content must contain text.",
+            )
+
+        self._prune_expired_state()
+        session = self.routing_sessions.get(session_id)
+        if session is None:
+            return self._invalid_routing_session_error()
+
+        self.routing_sessions.record_step(
+            session.session_id,
+            step_index=step_index,
+            step_type=step_type,
+            step_content=step_content,
+        )
+        recommendation = self.recommend_capabilities(
+            user_task=step_content,
+            context_summary=None,
+            limit=limit,
+            deprioritized_capability_ids=self._deprioritized_capability_ids_for_session(
+                session,
+            ),
+        )
+        if recommendation.get("status") != "ok":
+            return recommendation
+
+        self._record_routing_recommendation(
+            session.session_id,
+            recommendation,
+        )
+        self._attach_routing_session_id_to_recommendation(
+            recommendation,
+            routing_session_id=session.session_id,
+        )
+        return {
+            **recommendation,
+            "session_id": session.session_id,
+            "routing_round_id": create_routing_round_id(),
+            "step_index": step_index,
+            "step_type": step_type,
+            "next_step": (
+                "Pick one recommended_capabilities item, then call its "
+                "next_public_tool with ready_to_call_arguments. Call "
+                "analyze_agent_step again with only the next loop step when "
+                "new information arrives."
+            ),
+        }
+
+    def list_routing_session_state(
+            self,
+            *,
+            session_id: str,
+    ) -> dict[str, Any]:
+        """Return compact routing session state for inspection."""
+        self._prune_expired_state()
+        session = self.routing_sessions.get(session_id)
+        if session is None:
+            return self._invalid_routing_session_error()
+        payload = self.routing_sessions.to_payload(session_id)
+        assert payload is not None
+        return {"status": "ok", **payload}
+
+    def end_routing_session(
+            self,
+            *,
+            session_id: str,
+    ) -> dict[str, Any]:
+        """End a routing session."""
+        self._prune_expired_state()
+        if not self.routing_sessions.end(session_id):
+            return self._invalid_routing_session_error()
+        return {
+            "status": "ok",
+            "session_id": session_id,
+            "ended": True,
+        }
+
     def call_upstream_tool(
             self,
             *,
@@ -302,9 +453,15 @@ class GatewayRuntime:
             arguments: dict[str, Any],
             pending_action_id: str | None = None,
             session_id: str | None = None,
+            routing_session_id: str | None = None,
     ) -> dict[str, Any]:
         """Synchronously validate and execute one upstream tool call."""
         self._prune_expired_state(prune_pending_actions=False)
+        routing_session_error = self._validate_optional_routing_session_id(
+            routing_session_id,
+        )
+        if routing_session_error is not None:
+            return routing_session_error
         try:
             validate_tool_call(
                 ToolCallValidationInput(
@@ -329,6 +486,10 @@ class GatewayRuntime:
         capability = prepared
 
         if self.tool_executor is None:
+            self._record_routing_capability_failure(
+                routing_session_id,
+                capability.capability_id,
+            )
             return self._error(
                 "gateway_execution_not_implemented",
                 "No upstream tool executor is configured.",
@@ -337,9 +498,18 @@ class GatewayRuntime:
         try:
             raw_result = self.tool_executor.call_tool(capability, arguments)
         except Exception as exc:
+            self._record_routing_capability_failure(
+                routing_session_id,
+                capability.capability_id,
+            )
             return self._upstream_tool_error(capability, exc)
         assert self.result_manager is not None
-        return self.result_manager.prepare_result(raw_result, session_id=session_id)
+        result = self.result_manager.prepare_result(raw_result, session_id=session_id)
+        self._record_routing_capability_call(
+            routing_session_id,
+            capability.capability_id,
+        )
+        return result
 
     def read_upstream_resource_template(
             self,
@@ -349,9 +519,15 @@ class GatewayRuntime:
             capability_id: str,
             arguments: dict[str, Any],
             session_id: str | None = None,
+            routing_session_id: str | None = None,
     ) -> dict[str, Any]:
         """Synchronously expand and read a recommended resource template."""
         self._prune_expired_state()
+        routing_session_error = self._validate_optional_routing_session_id(
+            routing_session_id,
+        )
+        if routing_session_error is not None:
+            return routing_session_error
         prepared = self._prepare_recommended_capability_access(
             recommendation_id=recommendation_id,
             route_token=route_token,
@@ -365,6 +541,10 @@ class GatewayRuntime:
 
         read_resource_uri = getattr(self.tool_executor, "read_resource_uri", None)
         if self.tool_executor is None or read_resource_uri is None:
+            self._record_routing_capability_failure(
+                routing_session_id,
+                capability.capability_id,
+            )
             return self._error(
                 "gateway_execution_not_implemented",
                 "No upstream resource template executor is configured.",
@@ -374,9 +554,18 @@ class GatewayRuntime:
         try:
             raw_result = read_resource_uri(capability, uri)
         except Exception as exc:
+            self._record_routing_capability_failure(
+                routing_session_id,
+                capability.capability_id,
+            )
             return self._upstream_capability_error(capability, exc)
         assert self.result_manager is not None
-        return self.result_manager.prepare_result(raw_result, session_id=session_id)
+        result = self.result_manager.prepare_result(raw_result, session_id=session_id)
+        self._record_routing_capability_call(
+            routing_session_id,
+            capability.capability_id,
+        )
+        return result
 
     async def read_upstream_resource_template_async(
             self,
@@ -386,9 +575,15 @@ class GatewayRuntime:
             capability_id: str,
             arguments: dict[str, Any],
             session_id: str | None = None,
+            routing_session_id: str | None = None,
     ) -> dict[str, Any]:
         """Asynchronously expand and read a recommended resource template."""
         self._prune_expired_state()
+        routing_session_error = self._validate_optional_routing_session_id(
+            routing_session_id,
+        )
+        if routing_session_error is not None:
+            return routing_session_error
         prepared = self._prepare_recommended_capability_access(
             recommendation_id=recommendation_id,
             route_token=route_token,
@@ -401,6 +596,10 @@ class GatewayRuntime:
         capability = prepared
 
         if self.tool_executor is None:
+            self._record_routing_capability_failure(
+                routing_session_id,
+                capability.capability_id,
+            )
             return self._error(
                 "gateway_execution_not_implemented",
                 "No upstream resource template executor is configured.",
@@ -417,15 +616,28 @@ class GatewayRuntime:
                 if inspect.isawaitable(raw_result):
                     raw_result = await raw_result
             else:
+                self._record_routing_capability_failure(
+                    routing_session_id,
+                    capability.capability_id,
+                )
                 return self._error(
                     "gateway_execution_not_implemented",
                     "No upstream resource template executor is configured.",
                 )
         except Exception as exc:
+            self._record_routing_capability_failure(
+                routing_session_id,
+                capability.capability_id,
+            )
             return self._upstream_capability_error(capability, exc)
 
         assert self.result_manager is not None
-        return self.result_manager.prepare_result(raw_result, session_id=session_id)
+        result = self.result_manager.prepare_result(raw_result, session_id=session_id)
+        self._record_routing_capability_call(
+            routing_session_id,
+            capability.capability_id,
+        )
+        return result
 
     def read_upstream_resource(
             self,
@@ -434,9 +646,15 @@ class GatewayRuntime:
             route_token: str,
             capability_id: str,
             session_id: str | None = None,
+            routing_session_id: str | None = None,
     ) -> dict[str, Any]:
         """Synchronously read a recommended upstream resource."""
         self._prune_expired_state()
+        routing_session_error = self._validate_optional_routing_session_id(
+            routing_session_id,
+        )
+        if routing_session_error is not None:
+            return routing_session_error
         prepared = self._prepare_recommended_capability_access(
             recommendation_id=recommendation_id,
             route_token=route_token,
@@ -449,6 +667,10 @@ class GatewayRuntime:
 
         read_resource = getattr(self.tool_executor, "read_resource", None)
         if self.tool_executor is None or read_resource is None:
+            self._record_routing_capability_failure(
+                routing_session_id,
+                capability.capability_id,
+            )
             return self._error(
                 "gateway_execution_not_implemented",
                 "No upstream resource executor is configured.",
@@ -457,9 +679,18 @@ class GatewayRuntime:
         try:
             raw_result = read_resource(capability)
         except Exception as exc:
+            self._record_routing_capability_failure(
+                routing_session_id,
+                capability.capability_id,
+            )
             return self._upstream_capability_error(capability, exc)
         assert self.result_manager is not None
-        return self.result_manager.prepare_result(raw_result, session_id=session_id)
+        result = self.result_manager.prepare_result(raw_result, session_id=session_id)
+        self._record_routing_capability_call(
+            routing_session_id,
+            capability.capability_id,
+        )
+        return result
 
     async def read_upstream_resource_async(
             self,
@@ -468,9 +699,15 @@ class GatewayRuntime:
             route_token: str,
             capability_id: str,
             session_id: str | None = None,
+            routing_session_id: str | None = None,
     ) -> dict[str, Any]:
         """Asynchronously read a recommended upstream resource."""
         self._prune_expired_state()
+        routing_session_error = self._validate_optional_routing_session_id(
+            routing_session_id,
+        )
+        if routing_session_error is not None:
+            return routing_session_error
         prepared = self._prepare_recommended_capability_access(
             recommendation_id=recommendation_id,
             route_token=route_token,
@@ -482,6 +719,10 @@ class GatewayRuntime:
         capability = prepared
 
         if self.tool_executor is None:
+            self._record_routing_capability_failure(
+                routing_session_id,
+                capability.capability_id,
+            )
             return self._error(
                 "gateway_execution_not_implemented",
                 "No upstream resource executor is configured.",
@@ -497,15 +738,28 @@ class GatewayRuntime:
                 if inspect.isawaitable(raw_result):
                     raw_result = await raw_result
             else:
+                self._record_routing_capability_failure(
+                    routing_session_id,
+                    capability.capability_id,
+                )
                 return self._error(
                     "gateway_execution_not_implemented",
                     "No upstream resource executor is configured.",
                 )
         except Exception as exc:
+            self._record_routing_capability_failure(
+                routing_session_id,
+                capability.capability_id,
+            )
             return self._upstream_capability_error(capability, exc)
 
         assert self.result_manager is not None
-        return self.result_manager.prepare_result(raw_result, session_id=session_id)
+        result = self.result_manager.prepare_result(raw_result, session_id=session_id)
+        self._record_routing_capability_call(
+            routing_session_id,
+            capability.capability_id,
+        )
+        return result
 
     def get_upstream_prompt(
             self,
@@ -515,9 +769,15 @@ class GatewayRuntime:
             capability_id: str,
             arguments: dict[str, Any] | None = None,
             session_id: str | None = None,
+            routing_session_id: str | None = None,
     ) -> dict[str, Any]:
         """Synchronously get a recommended upstream prompt."""
         self._prune_expired_state()
+        routing_session_error = self._validate_optional_routing_session_id(
+            routing_session_id,
+        )
+        if routing_session_error is not None:
+            return routing_session_error
         prompt_arguments = arguments or {}
         prepared = self._prepare_recommended_capability_access(
             recommendation_id=recommendation_id,
@@ -532,6 +792,10 @@ class GatewayRuntime:
 
         get_prompt = getattr(self.tool_executor, "get_prompt", None)
         if self.tool_executor is None or get_prompt is None:
+            self._record_routing_capability_failure(
+                routing_session_id,
+                capability.capability_id,
+            )
             return self._error(
                 "gateway_execution_not_implemented",
                 "No upstream prompt executor is configured.",
@@ -540,9 +804,18 @@ class GatewayRuntime:
         try:
             raw_result = get_prompt(capability, prompt_arguments)
         except Exception as exc:
+            self._record_routing_capability_failure(
+                routing_session_id,
+                capability.capability_id,
+            )
             return self._upstream_capability_error(capability, exc)
         assert self.result_manager is not None
-        return self.result_manager.prepare_result(raw_result, session_id=session_id)
+        result = self.result_manager.prepare_result(raw_result, session_id=session_id)
+        self._record_routing_capability_call(
+            routing_session_id,
+            capability.capability_id,
+        )
+        return result
 
     async def get_upstream_prompt_async(
             self,
@@ -552,9 +825,15 @@ class GatewayRuntime:
             capability_id: str,
             arguments: dict[str, Any] | None = None,
             session_id: str | None = None,
+            routing_session_id: str | None = None,
     ) -> dict[str, Any]:
         """Asynchronously get a recommended upstream prompt."""
         self._prune_expired_state()
+        routing_session_error = self._validate_optional_routing_session_id(
+            routing_session_id,
+        )
+        if routing_session_error is not None:
+            return routing_session_error
         prompt_arguments = arguments or {}
         prepared = self._prepare_recommended_capability_access(
             recommendation_id=recommendation_id,
@@ -568,6 +847,10 @@ class GatewayRuntime:
         capability = prepared
 
         if self.tool_executor is None:
+            self._record_routing_capability_failure(
+                routing_session_id,
+                capability.capability_id,
+            )
             return self._error(
                 "gateway_execution_not_implemented",
                 "No upstream prompt executor is configured.",
@@ -583,15 +866,28 @@ class GatewayRuntime:
                 if inspect.isawaitable(raw_result):
                     raw_result = await raw_result
             else:
+                self._record_routing_capability_failure(
+                    routing_session_id,
+                    capability.capability_id,
+                )
                 return self._error(
                     "gateway_execution_not_implemented",
                     "No upstream prompt executor is configured.",
                 )
         except Exception as exc:
+            self._record_routing_capability_failure(
+                routing_session_id,
+                capability.capability_id,
+            )
             return self._upstream_capability_error(capability, exc)
 
         assert self.result_manager is not None
-        return self.result_manager.prepare_result(raw_result, session_id=session_id)
+        result = self.result_manager.prepare_result(raw_result, session_id=session_id)
+        self._record_routing_capability_call(
+            routing_session_id,
+            capability.capability_id,
+        )
+        return result
 
     async def call_upstream_tool_async(
             self,
@@ -602,9 +898,15 @@ class GatewayRuntime:
             arguments: dict[str, Any],
             pending_action_id: str | None = None,
             session_id: str | None = None,
+            routing_session_id: str | None = None,
     ) -> dict[str, Any]:
         """Asynchronously validate and execute one upstream tool call."""
         self._prune_expired_state(prune_pending_actions=False)
+        routing_session_error = self._validate_optional_routing_session_id(
+            routing_session_id,
+        )
+        if routing_session_error is not None:
+            return routing_session_error
         try:
             validate_tool_call(
                 ToolCallValidationInput(
@@ -629,6 +931,10 @@ class GatewayRuntime:
         capability = prepared
 
         if self.tool_executor is None:
+            self._record_routing_capability_failure(
+                routing_session_id,
+                capability.capability_id,
+            )
             return self._error(
                 "gateway_execution_not_implemented",
                 "No upstream tool executor is configured.",
@@ -643,10 +949,19 @@ class GatewayRuntime:
                 if inspect.isawaitable(raw_result):
                     raw_result = await raw_result
         except Exception as exc:
+            self._record_routing_capability_failure(
+                routing_session_id,
+                capability.capability_id,
+            )
             return self._upstream_tool_error(capability, exc)
 
         assert self.result_manager is not None
-        return self.result_manager.prepare_result(raw_result, session_id=session_id)
+        result = self.result_manager.prepare_result(raw_result, session_id=session_id)
+        self._record_routing_capability_call(
+            routing_session_id,
+            capability.capability_id,
+        )
+        return result
 
     def read_result(
             self,
@@ -1250,6 +1565,7 @@ class GatewayRuntime:
 
     def _prune_expired_state(self, *, prune_pending_actions: bool = True) -> None:
         self._prune_expired_recommendations()
+        self.routing_sessions.prune_expired()
         if prune_pending_actions:
             self.pending_actions.prune_expired()
         if self.result_manager is not None:
@@ -1259,6 +1575,12 @@ class GatewayRuntime:
         return self._error(
             "invalid_limit",
             "Limit must be an integer between 1 and 200.",
+        )
+
+    def _invalid_routing_session_error(self) -> dict[str, Any]:
+        return self._error(
+            "invalid_routing_session",
+            "The routing session is invalid, expired, or already ended.",
         )
 
     def _error(self, error_code: str, message: str) -> dict[str, Any]:
@@ -1334,10 +1656,98 @@ class GatewayRuntime:
                 "Configure allowed_roots for this upstream server before using "
                 "path-like arguments."
             ),
+            "invalid_routing_session": (
+                "Start a new routing session with start_routing_session before "
+                "calling analyze_agent_step."
+            ),
+            "invalid_user_task": "Provide a non-empty user_task.",
+            "invalid_step_content": "Provide the current non-empty loop step content.",
             "invalid_cursor": "Use the next_cursor returned by the previous page.",
             "invalid_limit": "Use a limit between 1 and 200.",
         }
         return next_steps.get(error_code)
+
+    def _deprioritized_capability_ids_for_session(self, session: Any) -> set[str]:
+        """Return capability ids that should be kept as fallbacks for a session."""
+        return {
+            *getattr(session, "called_capability_ids", []),
+            *getattr(session, "failed_capability_ids", []),
+        }
+
+    def _deprioritize_candidate_cards(
+            self,
+            cards: list[Any],
+            *,
+            deprioritized_capability_ids: set[str],
+    ) -> list[Any]:
+        """Move already-used or failed capabilities behind fresh alternatives."""
+        fresh_cards = [
+            card
+            for card in cards
+            if card.capability_id not in deprioritized_capability_ids
+        ]
+        fallback_cards = [
+            card
+            for card in cards
+            if card.capability_id in deprioritized_capability_ids
+        ]
+        return [*fresh_cards, *fallback_cards]
+
+    def _record_routing_recommendation(
+            self,
+            session_id: str,
+            recommendation: dict[str, Any],
+    ) -> None:
+        """Record capability ids from a public recommendation payload."""
+        capability_ids = [
+            item["capability_id"]
+            for item in recommendation.get("recommended_capabilities", [])
+            if isinstance(item, dict) and isinstance(item.get("capability_id"), str)
+        ]
+        self.routing_sessions.record_recommendation(session_id, capability_ids)
+
+    def _attach_routing_session_id_to_recommendation(
+            self,
+            recommendation: dict[str, Any],
+            *,
+            routing_session_id: str,
+    ) -> None:
+        """Add routing session context to ready-to-call argument envelopes."""
+        for item in recommendation.get("recommended_capabilities", []):
+            if not isinstance(item, dict):
+                continue
+            ready_arguments = item.get("ready_to_call_arguments")
+            if isinstance(ready_arguments, dict):
+                ready_arguments["routing_session_id"] = routing_session_id
+
+    def _validate_optional_routing_session_id(
+            self,
+            routing_session_id: str | None,
+    ) -> dict[str, Any] | None:
+        """Reject stale routing session ids when a caller asks to record diagnostics."""
+        if routing_session_id is None:
+            return None
+        if self.routing_sessions.get(routing_session_id) is None:
+            return self._invalid_routing_session_error()
+        return None
+
+    def _record_routing_capability_call(
+            self,
+            routing_session_id: str | None,
+            capability_id: str,
+    ) -> None:
+        """Record a successful capability access for an active routing session."""
+        if routing_session_id is not None:
+            self.routing_sessions.record_call(routing_session_id, capability_id)
+
+    def _record_routing_capability_failure(
+            self,
+            routing_session_id: str | None,
+            capability_id: str,
+    ) -> None:
+        """Record a failed capability access for an active routing session."""
+        if routing_session_id is not None:
+            self.routing_sessions.record_failure(routing_session_id, capability_id)
 
     def _risk_policy_denied(
             self,

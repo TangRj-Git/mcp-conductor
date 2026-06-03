@@ -6,6 +6,7 @@ from typing import Any
 from fastmcp import Context, FastMCP
 
 from .public_tools.analyze import analyze_user_task
+from .public_tools.analyze_step import analyze_agent_step
 from .public_tools.call_tool import call_upstream_tool_async
 from .public_tools.capabilities import list_upstream_capabilities
 from .public_tools.exposure import list_exposed_capabilities
@@ -14,6 +15,11 @@ from .public_tools.read_resource import read_upstream_resource_async
 from .public_tools.read_resource_template import read_upstream_resource_template_async
 from .public_tools.read_result import read_result
 from .public_tools.recommend import recommend_capabilities
+from .public_tools.routing_session import (
+    end_routing_session,
+    list_routing_session_state,
+    start_routing_session,
+)
 from .runtime import GatewayRuntime
 
 
@@ -35,6 +41,7 @@ async def _request_pending_action_confirmation(
         capability_id: str,
         arguments: dict[str, Any],
         session_id: str | None,
+        routing_session_id: str | None,
 ) -> dict[str, Any]:
     """Ask the host for confirmation and retry the pending action if accepted."""
     pending_action_id = pending_result.get("pending_action_id")
@@ -77,6 +84,7 @@ async def _request_pending_action_confirmation(
         arguments=arguments,
         pending_action_id=pending_action_id,
         session_id=session_id,
+        routing_session_id=routing_session_id,
     )
 
 
@@ -117,6 +125,48 @@ def create_server(runtime: GatewayRuntime | None = None) -> FastMCP:
             context_summary=context_summary,
             limit=limit,
         )
+
+    @server.tool(name="start_routing_session")
+    def start_routing_session_tool(
+            user_task: str,
+            context_summary: str | None = None,
+            limit: int = 10,
+    ) -> dict[str, Any]:
+        """Start a routing session and return the first recommendation."""
+        return start_routing_session(
+            gateway,
+            user_task=user_task,
+            context_summary=context_summary,
+            limit=limit,
+        )
+
+    @server.tool(name="analyze_agent_step")
+    def analyze_agent_step_tool(
+            session_id: str,
+            step_index: int,
+            step_type: str,
+            step_content: str,
+            limit: int = 10,
+    ) -> dict[str, Any]:
+        """Analyze one agent-loop step and recommend upstream capabilities."""
+        return analyze_agent_step(
+            gateway,
+            session_id=session_id,
+            step_index=step_index,
+            step_type=step_type,
+            step_content=step_content,
+            limit=limit,
+        )
+
+    @server.tool(name="list_routing_session_state")
+    def list_routing_session_state_tool(session_id: str) -> dict[str, Any]:
+        """Return compact routing session state for diagnostics."""
+        return list_routing_session_state(gateway, session_id=session_id)
+
+    @server.tool(name="end_routing_session")
+    def end_routing_session_tool(session_id: str) -> dict[str, Any]:
+        """End a routing session and release its in-memory state."""
+        return end_routing_session(gateway, session_id=session_id)
 
     @server.tool(name="list_upstream_capabilities")
     def list_upstream_capabilities_tool(
@@ -172,6 +222,7 @@ def create_server(runtime: GatewayRuntime | None = None) -> FastMCP:
             arguments: dict[str, Any],
             ctx: Context,
             pending_action_id: str | None = None,
+            routing_session_id: str | None = None,
     ) -> dict[str, Any]:
         """Call a recommended upstream tool after route and policy validation."""
         session_id = _context_session_id(ctx)
@@ -183,6 +234,7 @@ def create_server(runtime: GatewayRuntime | None = None) -> FastMCP:
             arguments=arguments,
             pending_action_id=pending_action_id,
             session_id=session_id,
+            routing_session_id=routing_session_id,
         )
         if result.get("status") != "confirmation_required" or pending_action_id is not None:
             return result
@@ -195,6 +247,7 @@ def create_server(runtime: GatewayRuntime | None = None) -> FastMCP:
             capability_id=capability_id,
             arguments=arguments,
             session_id=session_id,
+            routing_session_id=routing_session_id,
         )
 
     @server.tool(name="read_upstream_resource")
@@ -203,6 +256,7 @@ def create_server(runtime: GatewayRuntime | None = None) -> FastMCP:
             route_token: str,
             capability_id: str,
             ctx: Context,
+            routing_session_id: str | None = None,
     ) -> dict[str, Any]:
         """Read a recommended upstream resource after route validation."""
         return await read_upstream_resource_async(
@@ -211,6 +265,7 @@ def create_server(runtime: GatewayRuntime | None = None) -> FastMCP:
             route_token=route_token,
             capability_id=capability_id,
             session_id=_context_session_id(ctx),
+            routing_session_id=routing_session_id,
         )
 
     @server.tool(name="read_upstream_resource_template")
@@ -220,6 +275,7 @@ def create_server(runtime: GatewayRuntime | None = None) -> FastMCP:
             capability_id: str,
             arguments: dict[str, Any],
             ctx: Context,
+            routing_session_id: str | None = None,
     ) -> dict[str, Any]:
         """Safely expand and read a recommended upstream resource template."""
         return await read_upstream_resource_template_async(
@@ -229,6 +285,7 @@ def create_server(runtime: GatewayRuntime | None = None) -> FastMCP:
             capability_id=capability_id,
             arguments=arguments,
             session_id=_context_session_id(ctx),
+            routing_session_id=routing_session_id,
         )
 
     @server.tool(name="get_upstream_prompt")
@@ -238,6 +295,7 @@ def create_server(runtime: GatewayRuntime | None = None) -> FastMCP:
             capability_id: str,
             ctx: Context,
             arguments: dict[str, Any] | None = None,
+            routing_session_id: str | None = None,
     ) -> dict[str, Any]:
         """Get a recommended upstream prompt after route validation."""
         return await get_upstream_prompt_async(
@@ -247,6 +305,7 @@ def create_server(runtime: GatewayRuntime | None = None) -> FastMCP:
             capability_id=capability_id,
             arguments=arguments,
             session_id=_context_session_id(ctx),
+            routing_session_id=routing_session_id,
         )
 
     @server.tool(name="read_result")

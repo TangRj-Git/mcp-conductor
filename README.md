@@ -12,9 +12,11 @@ External host, such as Codex or Claude Code
   -> mcp-conductor recommends and validates which upstream capability may be used
 ```
 
-The current project is an MVP. It already supports upstream configuration loading, upstream client lifecycle, capability discovery, token/BM25-style recommendation with CJK term matching, route-token validation, controlled tool/resource/template/prompt access, risk policy checks, path allowlists, host elicitation for risky actions when supported, and session-scoped result caching.
+The current project is an MVP. It already supports upstream configuration loading, upstream client lifecycle, capability discovery, token/BM25-style recommendation with CJK term matching, lightweight step-routing sessions, route-token validation, controlled tool/resource/template/prompt access, risk policy checks, path allowlists, host elicitation for risky actions when supported, and session-scoped result caching.
 
 The most important public entrypoint is `analyze_user_task`. It lets Codex, Claude Code, or another MCP host ask the gateway which configured upstream capabilities are relevant for the current task or agent-loop step.
+
+For host wrappers or agent runtimes that want to route every loop step, the gateway also exposes `start_routing_session`, `analyze_agent_step`, `list_routing_session_state`, and `end_routing_session`. These tools provide a step-routing API, but they still cannot force Codex or Claude Code to call them automatically; that requires a wrapper/orchestrator outside the MCP server.
 
 ## Requirements
 
@@ -225,12 +227,34 @@ list_exposed_capabilities
 
 With the included `learn-mcp-server` config, this should show the discovered upstream capabilities. If you set `exposure.mode` to `proxy` or `hybrid`, `list_exposed_capabilities` also shows which read-only upstream tools match the exposure filters.
 
+## Step Routing APIs
+
+The repository keeps step-routing support inside the gateway server, but it does
+not include a standalone agent runtime or model provider. A host, wrapper, IDE
+plugin, or future orchestrator can use this server-side contract:
+
+```text
+start_routing_session
+-> call the recommendation's next_public_tool with ready_to_call_arguments
+-> pass the tool result summary to analyze_agent_step
+-> deprioritize capabilities already called or failed in this routing session
+-> inspect called_capability_ids and failed_capability_ids
+```
+
+This API still does not make Codex or Claude Code call `mcp-conductor`
+automatically. Forced per-step routing belongs in host-side instructions, hooks,
+wrappers, plugins, or a separate orchestrator.
+
 ## Public MCP Tools
 
 `mcp-conductor` exposes these public tools:
 
 ```text
 analyze_user_task
+start_routing_session
+analyze_agent_step
+list_routing_session_state
+end_routing_session
 list_upstream_capabilities
 list_exposed_capabilities
 recommend_capabilities
@@ -253,28 +277,50 @@ Typical flow:
    Optional diagnostic tool for inspecting discovered upstream capabilities.
    It supports pagination plus capability_type, upstream_server_id, and query filters.
 
-3. list_exposed_capabilities
+3. start_routing_session
+   Create a lightweight routing session for one user task and return the first
+   route-token-gated recommendation. Its ready_to_call_arguments include
+   routing_session_id so later tool/resource/prompt access can update the
+   routing session diagnostics.
+
+4. analyze_agent_step
+   Analyze only the current loop step content for an existing routing session.
+   It returns a new routing_round_id, recommendation_id, route tokens,
+   next_public_tool, and ready_to_call_arguments with routing_session_id.
+
+5. list_routing_session_state
+   Inspect compact routing session state. It returns summaries and capability ids,
+   not the full conversation.
+
+6. end_routing_session
+   Release in-memory routing session state.
+
+7. list_exposed_capabilities
    Optional diagnostic tool for inspecting the current proxy/hybrid exposure plan.
    It supports cursor/limit pagination. Skipped capability details are hidden by default;
    pass include_skipped=true when you need the diagnostic reasons.
    Dynamic proxy registration is not enabled yet.
 
-4. recommend_capabilities
+8. recommend_capabilities
    Lower-level alias for task-based recommendations.
 
-5. call_upstream_tool
-   Call one recommended tool with recommendation_id, route_token, capability_id, and arguments.
+9. call_upstream_tool
+   Call one recommended tool with recommendation_id, route_token, capability_id,
+   arguments, and optional routing_session_id.
 
-6. read_upstream_resource
-   Read one recommended resource with recommendation_id, route_token, and capability_id.
+10. read_upstream_resource
+   Read one recommended resource with recommendation_id, route_token,
+   capability_id, and optional routing_session_id.
 
-7. read_upstream_resource_template
+11. read_upstream_resource_template
    Expand one recommended resource template with validated arguments, then read it.
+   It accepts optional routing_session_id.
 
-8. get_upstream_prompt
-   Get one recommended prompt with recommendation_id, route_token, capability_id, and arguments.
+12. get_upstream_prompt
+   Get one recommended prompt with recommendation_id, route_token, capability_id,
+   arguments, and optional routing_session_id.
 
-9. read_result
+13. read_result
    Read cached large results when call_upstream_tool returns a result_id.
    Large result caching requires a host session id; without one, the gateway returns
    a summary/preview but no result_id.
@@ -296,7 +342,8 @@ Each recommendation includes a model-friendly continuation payload:
     "capability_id": "learn.resource_templates....",
     "arguments": {
       "name": "tool"
-    }
+    },
+    "routing_session_id": "session_..."
   },
   "usage_hint": "Use read_upstream_resource_template with ready_to_call_arguments ..."
 }
@@ -334,7 +381,7 @@ Optional real-upstream smoke test:
 uv run python scripts/smoke_learn_mcp.py
 ```
 
-The script starts `GatewayRuntime` with `mcp-conductor.config.json`, discovers upstream capabilities, recommends real `learn-mcp-server` capabilities, and verifies route-token-gated access for one tool, one resource, one resource template, and one prompt.
+The learn MCP smoke script starts `GatewayRuntime` with `mcp-conductor.config.json`, discovers upstream capabilities, recommends real `learn-mcp-server` capabilities, and verifies route-token-gated access for one tool, one resource, one resource template, and one prompt.
 
 To only verify discovery:
 
@@ -408,6 +455,9 @@ src/mcp_conductor/
   results/
   primitives/
   public_tools/
+
+scripts/
+  smoke_learn_mcp.py
 ```
 
 Important files:
@@ -420,6 +470,7 @@ src/mcp_conductor/upstream/client.py
 src/mcp_conductor/upstream/manager.py
 src/mcp_conductor/discovery/service.py
 src/mcp_conductor/routing/rules.py
+src/mcp_conductor/routing/session.py
 src/mcp_conductor/exposure/planner.py
 src/mcp_conductor/policy/risk.py
 src/mcp_conductor/policy/roots.py

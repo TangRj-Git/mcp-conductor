@@ -228,6 +228,10 @@ estimated_result_size
 
 ```text
 analyze_user_task
+start_routing_session
+analyze_agent_step
+list_routing_session_state
+end_routing_session
 list_upstream_capabilities
 list_exposed_capabilities
 recommend_capabilities
@@ -241,6 +245,10 @@ read_result
 其中：
 
 - `analyze_user_task` 用于根据当前用户任务或 agent loop 步骤推荐上游能力，是首选入口。
+- `start_routing_session` 用于为一个用户任务创建轻量 routing session，并返回第一轮推荐。
+- `analyze_agent_step` 用于在已有 routing session 中只根据当前单步 `step_content` 推荐上游能力。
+- `list_routing_session_state` 用于查看 compact routing session 状态，主要服务调试和 Inspector。
+- `end_routing_session` 用于释放 routing session 状态。
 - `list_upstream_capabilities` 用于查看内部发现到的能力摘要。
 - `list_exposed_capabilities` 用于查看当前 `exposure` 配置下的 proxy/hybrid 暴露计划；它只做诊断，不直接执行上游能力。
 - `recommend_capabilities` 用于根据用户任务推荐上游能力，是较底层入口。

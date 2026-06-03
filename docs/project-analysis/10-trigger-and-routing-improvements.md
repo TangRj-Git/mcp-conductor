@@ -56,7 +56,8 @@ Host 决定调用 mcp-conductor
     "capability_id": "learn.resource_templates....",
     "arguments": {
       "name": "tool"
-    }
+    },
+    "routing_session_id": "session_..."
   },
   "usage_hint": "Use read_upstream_resource_template with ready_to_call_arguments ..."
 }
@@ -187,6 +188,7 @@ hybrid
 - `mcp-conductor` 内部可以配置多个上游 MCP Server。
 - 可以发现 tools/resources/resource templates/prompts。
 - 可以把上游能力压缩成当前任务候选能力。
+- 可以创建轻量 routing session，并通过 `analyze_agent_step` 只根据当前 loop 步骤重新推荐能力。
 - 可以通过 `recommendation_id` 和 `route_token` 控制后续访问。
 - 可以通过公开工具访问四类上游能力。
 - 可以用 `list_exposed_capabilities` 查看将来 proxy/hybrid 的暴露计划。
@@ -206,13 +208,11 @@ hybrid
 下一阶段优先级建议：
 
 ```text
-P1: 增加 step routing 会话能力，为每轮 agent loop 筛选打基础
-P2: 增加 analyze_agent_step，接收当前 loop 步骤内容并返回候选能力
-P3: 增加本地 demo orchestrator，证明“每轮筛选 -> 模型选择 -> route-gated 执行 -> 下一轮”的流程
-P4: 在已有 exposure plan 基础上实现 proxy / hybrid 动态工具注册
-P5: 引入 Host Sampling / 语义检索作为可选增强
-P6: 增加多上游健康检查、重连和配置 reload
-P7: 如果需要强制接管 Codex / Claude Code，则开发独立 Host wrapper / Agent Orchestrator
+P1: 增加本地 demo orchestrator，证明“每轮筛选 -> 模型选择 -> route-gated 执行 -> 下一轮”的流程
+P2: 在已有 exposure plan 基础上实现 proxy / hybrid 动态工具注册
+P3: 引入 Host Sampling / 语义检索作为可选增强
+P4: 增加多上游健康检查、重连和配置 reload
+P5: 如果需要强制接管 Codex / Claude Code，则开发独立 Host wrapper / Agent Orchestrator
 ```
 
-`P1-P3` 仍可在当前 Gateway Server 中先做，因为它们只是提供“按步骤筛选”的 API 和验证脚本。真正强制每轮触发，需要 `P7`。
+Gateway Core 的 step-routing API 已经落地。真正强制每轮触发，仍需要独立 Host wrapper / Agent Orchestrator。

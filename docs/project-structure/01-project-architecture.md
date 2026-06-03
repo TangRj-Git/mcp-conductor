@@ -37,7 +37,7 @@ def main():
 当前第一版基础代码已经进入可联调状态：
 
 - `src/mcp_conductor` 包结构已经建立。
-- FastMCP 对外入口和九个对外工具已经建立。
+- FastMCP 对外入口和十三个对外工具已经建立。
 - 配置加载、环境变量替换、上游 Client 管理、能力发现、能力注册、规则推荐、执行校验、结果缓存、风险策略、危险操作确认和 Roots/allowlist 已经有第一版实现。
 - `.env`、`.idea/`、`.venv/`、`__pycache__/` 和 `.pytest_cache/` 已经通过 `.gitignore` 排除；`.env` 和 `.idea/` 已从 Git 索引移除，保留本地使用。
 - 当前测试命令 `uv run pytest` 已通过；具体通过数量以最新测试输出为准。
@@ -45,7 +45,7 @@ def main():
 下一步应分成两条线：
 
 1. 继续做真实上游 MCP Server 联调，验证从配置、启动、发现、推荐、调用到结果返回的完整链路。
-2. 为“每轮 agent loop 步骤都先筛选能力”的目标设计 step routing API 和轻量 routing session；如果要强制触发，则后续另建 Host wrapper / Agent Orchestrator。
+2. 用本地 demo orchestrator 验证 “每轮筛选 -> 模型选择 -> route-gated 执行 -> 下一轮” 的流程；如果要强制触发，则后续另建 Host wrapper / Agent Orchestrator。
 
 ## 架构目标
 
@@ -195,6 +195,10 @@ python -m mcp_conductor
 
 - 创建 FastMCP app/server。
 - 注册 `analyze_user_task`。
+- 注册 `start_routing_session`。
+- 注册 `analyze_agent_step`。
+- 注册 `list_routing_session_state`。
+- 注册 `end_routing_session`。
 - 注册 `list_upstream_capabilities`。
 - 注册 `list_exposed_capabilities`。
 - 注册 `recommend_capabilities`。
@@ -229,6 +233,10 @@ python -m mcp_conductor
 
 ```text
 analyze_user_task(...)
+start_routing_session(...)
+analyze_agent_step(...)
+list_routing_session_state(...)
+end_routing_session(...)
 list_upstream_capabilities(...)
 list_exposed_capabilities(...)
 recommend_capabilities(...)
@@ -680,7 +688,7 @@ public_tools
 第一版建议实现顺序和当前状态：
 
 1. 已完成：建立 `src/mcp_conductor` 包结构和 CLI 入口。
-2. 已完成：创建 FastMCP 服务和九个对外工具。
+2. 已完成：创建 FastMCP 服务和十三个对外工具。
 3. 已完成：实现配置加载和配置 schema。
 4. 已完成：实现上游 Client Manager 的生命周期骨架。
 5. 已完成：实现 tools/resources/templates/prompts 发现。
@@ -695,7 +703,8 @@ public_tools
 14. 已完成：实现 `exposure` 配置、暴露计划生成器和 `list_exposed_capabilities` 诊断入口。
 15. 已完成：使用真实 `learn-mcp-server` 配置跑通发现、推荐和四类公开访问工具的 smoke 验证。
 16. 下一步：根据更多真实上游联调结果继续补齐错误提示、端到端测试和配置样例。
-17. 下一步：补齐 step routing 会话结构和 `analyze_agent_step` 设计，为后续 Host/Agent Orchestrator 做准备。
+17. 已完成：补齐 step routing 会话结构和 `analyze_agent_step`，为后续 Host/Agent Orchestrator 做准备。
+18. 下一步：增加本地 demo orchestrator，验证每步筛选工作流。
 
 ## 顶层 main.py 是否需要删除
 

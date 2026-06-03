@@ -113,6 +113,7 @@ def test_runtime_startup_clears_volatile_session_state() -> None:
             pass
 
     runtime = GatewayRuntime(upstream_manager_factory=FakeManager)
+    routing_session = runtime.start_routing_session(user_task="Check docs")
     runtime.recommendations["rec_old"] = Recommendation(
         recommendation_id="rec_old",
         expires_at=datetime.now(UTC) + timedelta(seconds=300),
@@ -128,6 +129,9 @@ def test_runtime_startup_clears_volatile_session_state() -> None:
 
     runtime.startup()
 
+    assert runtime.list_routing_session_state(
+        session_id=routing_session["session_id"],
+    )["error_code"] == "invalid_routing_session"
     assert runtime.recommendations == {}
     assert runtime.pending_actions.get(pending.pending_action_id) is None
     assert runtime.result_manager.cache.get(result_id) is None

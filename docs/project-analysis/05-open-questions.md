@@ -37,6 +37,10 @@
 
 ```text
 analyze_user_task
+start_routing_session
+analyze_agent_step
+list_routing_session_state
+end_routing_session
 list_upstream_capabilities
 list_exposed_capabilities
 recommend_capabilities
@@ -55,7 +59,8 @@ read_result
 4. `read_result` 只读当前 session 或请求上下文可访问的缓存结果。
 5. `analyze_user_task` 是首选任务分析入口，`recommend_capabilities` 是较底层推荐入口。
 6. `list_exposed_capabilities` 只展示当前 `exposure` 配置下的暴露计划，不动态注册或执行上游能力。
-7. `ask_conductor` 放到第二阶段或可选增强。
+7. `start_routing_session`、`analyze_agent_step`、`list_routing_session_state` 和 `end_routing_session` 已作为 Gateway Core step-routing API 加入公开工具。
+8. `ask_conductor` 放到第二阶段或可选增强。
 
 ### 安全策略
 
@@ -84,7 +89,7 @@ read_result
 1. 当前 MCP Server 形态不能强制 Codex、Claude Code 等 Host 每次用户输入都调用 `mcp-conductor`。
 2. 当前 MCP Server 形态不能直接插入外部 Host 的每一次内部 agent loop。
 3. 强制每轮筛选需要额外的 Host wrapper、Agent Orchestrator 或 IDE/plugin 层。
-4. 当前 Gateway Core 后续可以先实现 step routing API 和轻量 routing session，为外层 Orchestrator 做准备。
+4. 当前 Gateway Core 已实现 step routing API 和轻量 routing session，可为外层 Orchestrator 提供稳定接口。
 
 ### 工程入口
 
@@ -135,10 +140,9 @@ read_result
 
 ### Host/Agent Orchestrator
 
-1. 是否要正式新增 `mcp-conductor-agent` 包，还是只先保留 demo orchestrator？
-2. `analyze_agent_step` 是否作为第一阶段后续公开工具加入，还是等 Orchestrator 开发时再加入？
-3. routing session 是否只服务 step routing，还是也要绑定 `recommendation_id`、`result_id` 和 `pending_action_id` 的可访问边界？
-4. 每次 step routing 是否允许使用 Host Sampling，还是第一版仍只用规则/标签筛选？
+1. 是否需要在 Gateway Server 之外单独开发 Host wrapper、插件或示例项目，用于验证强制每步路由？
+2. routing session 是否只服务 step routing，还是也要绑定 `recommendation_id`、`result_id` 和 `pending_action_id` 的可访问边界？
+3. 每次 step routing 是否允许使用 Host Sampling，还是第一版仍只用规则/标签筛选？
 
 ## 第一阶段里程碑
 

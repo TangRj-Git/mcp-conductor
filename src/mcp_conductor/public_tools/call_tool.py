@@ -14,6 +14,7 @@ def call_upstream_tool(
         arguments: dict[str, Any],
         pending_action_id: str | None = None,
         session_id: str | None = None,
+        routing_session_id: str | None = None,
 ) -> dict[str, Any]:
     """Synchronously call an upstream tool through the runtime validation flow."""
     return runtime.call_upstream_tool(
@@ -23,6 +24,7 @@ def call_upstream_tool(
         arguments=arguments,
         pending_action_id=pending_action_id,
         session_id=session_id,
+        routing_session_id=routing_session_id,
     )
 
 
@@ -35,6 +37,7 @@ async def call_upstream_tool_async(
         arguments: dict[str, Any],
         pending_action_id: str | None = None,
         session_id: str | None = None,
+        routing_session_id: str | None = None,
 ) -> dict[str, Any]:
     """Asynchronously call an upstream tool through the runtime validation flow."""
     return await runtime.call_upstream_tool_async(
@@ -44,4 +47,5 @@ async def call_upstream_tool_async(
         arguments=arguments,
         pending_action_id=pending_action_id,
         session_id=session_id,
+        routing_session_id=routing_session_id,
     )

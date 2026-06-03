@@ -109,16 +109,16 @@
 - 返回 `exposed_capabilities` 和 `skipped_capabilities`，用于 Inspector 或 Host 诊断。
 - 不直接注册 FastMCP 动态工具，也不执行任何上游能力。
 
-### 7.6 Step Routing Session（后续）
+### 7.6 Step Routing Session
 
-这是为了支持“每次用户输入和每次 agent loop 步骤都重新筛选能力”的后续模块。
+这是为了支持“每次用户输入和每次 agent loop 步骤都重新筛选能力”的 Gateway Core 模块。
 
 主要职责：
 
 - 保存轻量 routing session，不保存完整对话历史。
 - 记录最初用户任务摘要、最近步骤摘要、推荐过的能力、调用过的能力和失败记录。
 - 接收单次 `step_content`，辅助当前步骤能力筛选。
-- 为后续 `analyze_agent_step` 返回 `routing_round_id`、候选能力、`next_public_tool` 和 `ready_to_call_arguments`。
+- 为 `analyze_agent_step` 返回 `routing_round_id`、候选能力、`next_public_tool` 和 `ready_to_call_arguments`。
 - 给未来 Host wrapper / Agent Orchestrator 提供稳定接口。
 
 边界：
@@ -180,6 +180,10 @@
 
 ```text
 analyze_user_task
+start_routing_session
+analyze_agent_step
+list_routing_session_state
+end_routing_session
 list_upstream_capabilities
 list_exposed_capabilities
 recommend_capabilities
@@ -190,7 +194,7 @@ get_upstream_prompt
 read_result
 ```
 
-`analyze_user_task` 是首选任务分析入口，`recommend_capabilities` 是较底层推荐入口。`ask_conductor` 作为第二阶段或可选增强工具，依赖 Host Sampling。它不能替代 `analyze_user_task/recommend_capabilities -> 具体访问工具` 的受控链路，也不能把项目变成完整 Host 或聊天代理。
+`analyze_user_task` 是首选任务分析入口，`recommend_capabilities` 是较底层推荐入口。`start_routing_session` 和 `analyze_agent_step` 为外层 Orchestrator 提供每步路由接口，但不强制外部 Host 调用。`ask_conductor` 作为第二阶段或可选增强工具，依赖 Host Sampling。它不能替代 `analyze_user_task/recommend_capabilities -> 具体访问工具` 的受控链路，也不能把项目变成完整 Host 或聊天代理。
 
 ### 12. MCP 客户端原语和工具适配器
 
@@ -231,7 +235,7 @@ read_result
 边界：
 
 - 它可以使用 `mcp-conductor-core`，但不能和当前 `mcp_conductor` Gateway 包混成一个入口。
-- 如果开发，建议使用独立包名或目录，例如 `mcp_conductor_agent`。
+- 当前仓库不再包含独立 agent 原型包、模型决策接口或 provider 适配器；这些能力如果继续开发，应放在 Gateway Server 之外。
 - 它才是能强制每轮筛选的层；当前 MCP Server 只能被动响应调用。
 
 ## 第一阶段建议优先级
@@ -251,9 +255,6 @@ read_result
 
 Gateway Core 稳定后，下一阶段建议按这个顺序继续：
 
-1. Step Routing Session。
-2. `analyze_agent_step`。
-3. 本地 `agent_loop_demo.py`。
-4. Host Sampling / 语义检索增强。
-5. proxy / hybrid 动态工具注册。
-6. 独立 Host / Agent Orchestrator。
+1. 真实 Host / Agent Orchestrator：如确实需要强制每步路由，应在独立 Host、wrapper、插件或单独示例项目中实现。
+2. Host Sampling / 语义检索增强。
+3. proxy / hybrid 动态工具注册。

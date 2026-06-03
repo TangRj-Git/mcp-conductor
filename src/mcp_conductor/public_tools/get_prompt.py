@@ -13,6 +13,7 @@ async def get_upstream_prompt_async(
         capability_id: str,
         arguments: dict[str, Any] | None = None,
         session_id: str | None = None,
+        routing_session_id: str | None = None,
 ) -> dict[str, Any]:
     """Get a recommended upstream prompt through runtime validation."""
     return await runtime.get_upstream_prompt_async(
@@ -21,4 +22,5 @@ async def get_upstream_prompt_async(
         capability_id=capability_id,
         arguments=arguments,
         session_id=session_id,
+        routing_session_id=routing_session_id,
     )
